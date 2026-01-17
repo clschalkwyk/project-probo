@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Probo | Check before you send</title>
+
+  <meta name="description" content="Probo: instant, explainable risk signals for Ethereum addresses — before you send." />
+  <meta name="theme-color" content="#0b0f1a" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet" />
+
+  <style>
+    :root{
+      --bg:#070a12;
+      --text:rgba(255,255,255,.92);
+      --muted:rgba(255,255,255,.68);
+      --dim:rgba(255,255,255,.5);
+      --border:rgba(255,255,255,.12);
+      --shadow: 0 24px 80px rgba(0,0,0,.45);
+      --radius:18px;
+      --radius2:24px;
+      --max:760px;
+    }
+
+    *{ box-sizing:border-box; }
+    html,body{ height:100%; }
+
+    body{
+      margin:0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background:
+        radial-gradient(1200px 800px at 20% 10%, rgba(120,160,255,.12), transparent 55%),
+        radial-gradient(1000px 700px at 80% 30%, rgba(255,90,120,.09), transparent 60%),
+        radial-gradient(800px 600px at 55% 90%, rgba(80,220,150,.07), transparent 60%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    .bg-grid{
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      opacity:.3;
+      background-image:
+        linear-gradient(to right, rgba(255,255,255,.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: radial-gradient(700px 700px at 50% 20%, black 40%, transparent 70%);
+    }
+
+    .wrap{
+      min-height:100%;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      padding: 32px 16px 40px;
+      gap: 18px;
+    }
+
+    /* LOGO BLOCK (outside hero) */
+    .brand{
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      text-align:center;
+    }
+
+    .logo-wrap{
+      border-radius: 26px;
+      background: rgba(255,255,255,.08);
+      box-shadow: 0 22px 48px rgba(0,0,0,.5);
+
+      /* Fixes */
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      gap: 10px;
+      padding: 18px 18px 14px;
+      border: 1px solid rgba(255,255,255,.10);
+    }
+
+    .logo{
+      /* Responsive: big on desktop, sane on mobile */
+      width: clamp(220px, 62vw, 460px);
+      max-width: 100%;
+      height: auto;
+      display:block;
+      object-fit:contain;
+    }
+
+    .brand-tagline{
+      font-size: 13px;
+      color: var(--dim);
+      line-height: 1.2;
+      margin: 0;
+    }
+
+    /* HERO CARD */
+    .card{
+      width: min(var(--max), 100%);
+      border-radius: var(--radius2);
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.04));
+      box-shadow: var(--shadow);
+      padding: 32px 28px;
+    }
+
+    h1{
+      margin: 0 0 14px;
+      font-size: clamp(36px, 5vw, 54px);
+      letter-spacing: -0.9px;
+      line-height: 1.02;
+      text-align:center;
+    }
+
+    .subtitle{
+      margin: 0 auto 18px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.6;
+      max-width: 60ch;
+      text-align:center;
+    }
+
+    .bullets{
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height:1.7;
+    }
+
+    footer{
+      margin-top: 22px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      flex-wrap:wrap;
+      color: rgba(255,255,255,.42);
+      font-size: 12px;
+    }
+
+    @media (max-width: 520px){
+      .card{ padding: 26px 20px; }
+      footer{ justify-content:center; text-align:center; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="bg-grid" aria-hidden="true"></div>
+
+  <div class="wrap">
+    <!-- LOGO / BRAND -->
+    <div class="brand">
+      <div class="logo-wrap">
+        <img src="logo.png" alt="Probo logo" class="logo" />
+        <div class="brand-tagline">Explainable wallet risk signals</div>
+      </div>
+    </div>
+
+    <!-- HERO -->
+    <main class="card">
+      <h1>CHECK BEFORE YOU SEND</h1>
+
+      <p class="subtitle">
+        A fast, explainable trust signal for informal crypto payments.
+      </p>
+
+      <ul class="bullets">
+        <li>No wallet connect. No accounts.</li>
+        <li>0–100 score with clear risk bands.</li>
+        <li>Explainable signals — not a black box.</li>
+      </ul>
+
+      <footer>
+        <span>© 2026 Probo. Trust should be cheap.</span>
+        <span>Ethereum first</span>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>
