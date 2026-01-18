@@ -149,6 +149,11 @@ The viewer loads a JSON file, stores it in IndexedDB, and lets you explore:
 - force graph of connected addresses/tokens
 - directional edges for transfer flow
 
+Created a viewer and graph visualizer for Probo, helps to understand the data:
+![viewer.png](docs/img/viewer.png)
+
+![graph.png](docs/img/graph.png)
+
 ## Notes
 
 - No tests are set up yet; if you add tests, use `pytest` under `tests/`.
