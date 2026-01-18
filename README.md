@@ -14,6 +14,9 @@ Wallets are hard to evaluate at a glance. Probo focuses on explainable scoring: 
 - Local caches for token metadata and curated intelligence lists.
 - Viewer app to explore the extracted data visually.
 
+## Website
+- http://probo.co.za 
+
 ## Architecture
 
 ```mermaid
