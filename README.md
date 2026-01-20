@@ -148,6 +148,8 @@ flowchart TD
     I -->|BFS with decay| D
 ```
 
+Each address is processed with a bounded time window and transfer cap, then paginated deterministically to ensure repeatable pulls. Transfers are normalized, enriched with token metadata, and written to an extraction JSON. When fan-out is enabled, counterparties are queued and fetched with a decay rule to keep the graph expansion controlled.
+
 ## Analysis output
 
 Each analysis JSON includes:
