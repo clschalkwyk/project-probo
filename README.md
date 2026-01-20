@@ -140,7 +140,7 @@ flowchart TD
     A[Seed address] --> B[Normalize + validate]
     B --> C[Load time window + caps]
     C --> D[alchemy_getAssetTransfers]
-    D --> E[Paginate (deterministic order)]
+    D --> E[Paginate : deterministic order]
     E --> F[Decode + normalize transfers]
     F --> G[Enrich token metadata]
     G --> H[Write extraction JSON]
