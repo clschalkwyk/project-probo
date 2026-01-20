@@ -133,6 +133,21 @@ Optional Etherscan fallback is used for:
 - earliest/latest transaction bounds
 - token metadata when Alchemy is incomplete
 
+## Data leeching flow (per address)
+
+```mermaid
+flowchart TD
+    A[Seed address] --> B[Normalize + validate]
+    B --> C[Load time window + caps]
+    C --> D[alchemy_getAssetTransfers]
+    D --> E[Paginate (deterministic order)]
+    E --> F[Decode + normalize transfers]
+    F --> G[Enrich token metadata]
+    G --> H[Write extraction JSON]
+    H --> I[Optional fan-out: queue counterparties]
+    I -->|BFS with decay| D
+```
+
 ## Analysis output
 
 Each analysis JSON includes:
