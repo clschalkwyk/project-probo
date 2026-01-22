@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
+from urllib.error import HTTPError, URLError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -23,6 +24,8 @@ from probo.blocknumber import _endpoint_from_notes, _load_dotenv
 
 _ALCHEMY_MAINNET = "https://eth-mainnet.g.alchemy.com/v2/{}"
 _ETHERSCAN_API = "https://api.etherscan.io/api"
+_REQUEST_RETRIES = 3
+_REQUEST_BACKOFF = 1.0
 
 
 @dataclass(frozen=True)
@@ -42,14 +45,52 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    last_exc: Exception | None = None
+    for attempt in range(_REQUEST_RETRIES):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError) as exc:
+            last_exc = exc
+            if attempt >= _REQUEST_RETRIES - 1:
+                break
+            _log(f"[retry] post attempt={attempt + 1} err={exc}")
+            time.sleep(_REQUEST_BACKOFF * (2**attempt))
+    if last_exc:
+        raise last_exc
+    return {}
 
 
 def _get_json(url: str, timeout: int) -> dict:
     req = urllib.request.Request(url, headers={"accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    last_exc: Exception | None = None
+    for attempt in range(_REQUEST_RETRIES):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError) as exc:
+            last_exc = exc
+            if attempt >= _REQUEST_RETRIES - 1:
+                break
+            _log(f"[retry] get attempt={attempt + 1} err={exc}")
+            time.sleep(_REQUEST_BACKOFF * (2**attempt))
+    if last_exc:
+        raise last_exc
+    return {}
+
+
+def _log(message: str) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {message}", flush=True)
+
+
+def _append_error(path: Optional[Path], address: str, message: str) -> None:
+    if not path:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"[{ts}] address={address} error={message}\n")
 
 
 def _alchemy_endpoint(endpoint: Optional[str], notes_path: str) -> str:
@@ -85,6 +126,20 @@ def _block_info(endpoint: str, block_num: int, timeout: int) -> BlockInfo:
     return BlockInfo(number=block_num, timestamp=int(result["timestamp"], 16))
 
 
+def _is_contract(endpoint: str, address: str, block_tag: str, timeout: int) -> Optional[bool]:
+    payload = {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "eth_getCode",
+        "params": [address, block_tag],
+    }
+    response = _post_json(endpoint, payload, timeout)
+    result = response.get("result")
+    if result is None:
+        return None
+    return result not in ("0x", "0x0")
+
+
 def _find_block_by_timestamp(endpoint: str, target_ts: int, timeout: int) -> BlockInfo:
     latest = _latest_block(endpoint, timeout)
     cache: Dict[int, BlockInfo] = {}
@@ -117,6 +172,18 @@ def _read_addresses(path: Path) -> List[str]:
             continue
         addresses.append(line)
     return addresses
+
+
+def _load_config(path: str | None) -> dict:
+    if not path:
+        return {}
+    file_path = Path(path)
+    if not file_path.exists():
+        raise SystemExit(f"Config file not found: {file_path}")
+    try:
+        return json.loads(file_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON config: {file_path}") from exc
 
 
 def _load_json_cache(path: Path) -> dict:
@@ -670,35 +737,56 @@ def extract_for_address(
     fanout_max_nodes: int,
     fanout_max_neighbors_per_node: int,
 ) -> dict:
-    print(f"[extract] address={address}")
+    _log(f"[extract] address={address}")
     now_ts = int(time.time())
     target_ts = now_ts - days * 24 * 60 * 60
     start_block = _find_block_by_timestamp(endpoint, target_ts, timeout)
     end_block = _block_info(endpoint, _latest_block(endpoint, timeout), timeout)
-    print(
-        "[extract] window",
-        hex(start_block.number),
-        "->",
-        hex(end_block.number),
-        f"({days}d)",
+    _log(
+        f"[extract] window {hex(start_block.number)} -> {hex(end_block.number)} ({days}d)"
     )
+
+    first_transfer = None
+    all_time_count = None
+    all_time_truncated = None
+    transfers_skipped = False
+    transfers_skip_reason = None
+    transfers_scope = "window"
+    transfers_from_block = hex(start_block.number)
+    transfers_to_block = hex(end_block.number)
+
+    if include_all_time_count:
+        first_transfer = _fetch_first_transfer(endpoint, address, timeout)
+        all_time_count, all_time_truncated = _count_transfers(
+            endpoint,
+            address,
+            to_block=hex(end_block.number),
+            timeout=timeout,
+            max_count_hex=hex(max_count),
+            max_pages=all_time_max_pages,
+        )
+        _log(f"[extract] all_time_transfers={all_time_count} truncated={all_time_truncated}")
+        if all_time_count is not None and all_time_count <= 100:
+            transfers_scope = "all_time"
+            transfers_from_block = "0x0"
 
     transfers = _fetch_transfers(
         endpoint,
         address,
-        from_block=hex(start_block.number),
-        to_block=hex(end_block.number),
+        from_block=transfers_from_block,
+        to_block=transfers_to_block,
         timeout=timeout,
         max_count_hex=hex(max_count),
         max_total=max_total_transfers,
     )
     transfers = _sort_transfers_desc(transfers)
-    print(f"[extract] transfers={len(transfers)} truncated={len(transfers) >= max_total_transfers}")
-    token_balances = _fetch_token_balances(endpoint, address, timeout)
-    print(
-        f"[extract] token_balances={len(token_balances.get('tokenBalances') or [])}"
+    _log(
+        f"[extract] transfers={len(transfers)} truncated={len(transfers) >= max_total_transfers}"
     )
-    first_transfer = _fetch_first_transfer(endpoint, address, timeout)
+    token_balances = _fetch_token_balances(endpoint, address, timeout)
+    _log(f"[extract] token_balances={len(token_balances.get('tokenBalances') or [])}")
+    if not first_transfer:
+        first_transfer = _fetch_first_transfer(endpoint, address, timeout)
 
     token_addresses = _extract_token_addresses(transfers, token_balances)
     token_cache = _load_json_cache(token_cache_path)
@@ -724,25 +812,12 @@ def extract_for_address(
             updated = True
     if updated:
         _save_json_cache(token_cache_path, token_cache)
-    print(f"[extract] token_meta cache hits={cache_hits} misses={cache_misses}")
-
-    all_time_count = None
-    all_time_truncated = None
-    if include_all_time_count:
-        all_time_count, all_time_truncated = _count_transfers(
-            endpoint,
-            address,
-            to_block=hex(end_block.number),
-            timeout=timeout,
-            max_count_hex=hex(max_count),
-            max_pages=all_time_max_pages,
-        )
-        print(
-            f"[extract] all_time_transfers={all_time_count} truncated={all_time_truncated}"
-        )
+    _log(f"[extract] token_meta cache hits={cache_hits} misses={cache_misses}")
 
     result = {
         "address": address,
+        "address_type": "unknown",
+        "address_is_contract": None,
         "window_days": days,
         "window": {
             "from_block": hex(start_block.number),
@@ -757,6 +832,9 @@ def extract_for_address(
             "token_balances": len(token_balances.get("tokenBalances") or []),
         },
         "transfers_truncated": len(transfers) >= max_total_transfers,
+        "transfers_skipped": transfers_skipped,
+        "transfers_skip_reason": transfers_skip_reason,
+        "transfers_scope": transfers_scope,
         "first_transfer": {
             "block_num": hex(_transfer_block_num(first_transfer)) if first_transfer else None,
             "timestamp": _transfer_timestamp(first_transfer) if first_transfer else None,
@@ -774,6 +852,14 @@ def extract_for_address(
         "fetched_at": now_ts,
         "fetched_at_iso": _format_iso_timestamp(now_ts),
     }
+
+    is_contract = _is_contract(endpoint, address, hex(end_block.number), timeout)
+    if is_contract is True:
+        result["address_type"] = "contract"
+        result["address_is_contract"] = True
+    elif is_contract is False:
+        result["address_type"] = "wallet"
+        result["address_is_contract"] = False
 
     if fanout_levels > 0:
         result["fanout"] = _fanout_graph(
@@ -796,7 +882,17 @@ def extract_for_address(
 
 
 def main() -> None:
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", default=None, help="Optional JSON config.")
+    config_args, remaining = config_parser.parse_known_args()
+    config = _load_config(config_args.config)
+
     parser = argparse.ArgumentParser(description="Extract transfer data from Alchemy.")
+    parser.add_argument(
+        "--config",
+        default=config_args.config,
+        help="Optional JSON config.",
+    )
     parser.add_argument(
         "--addresses-path",
         default="test_address.txt",
@@ -806,6 +902,11 @@ def main() -> None:
         "--output-dir",
         default="data/extractions",
         help="Directory for JSON output files.",
+    )
+    parser.add_argument(
+        "--error-log",
+        default="data/extractions/errors.log",
+        help="Path for extraction error log (set empty to disable).",
     )
     parser.add_argument(
         "--days",
@@ -830,6 +931,18 @@ def main() -> None:
         type=int,
         default=20,
         help="Request timeout in seconds.",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=3,
+        help="Retry count for network requests.",
+    )
+    parser.add_argument(
+        "--retry-backoff",
+        type=float,
+        default=1.0,
+        help="Backoff seconds for network retries.",
     )
     parser.add_argument(
         "--include-all-time-count",
@@ -893,7 +1006,13 @@ def main() -> None:
         default=None,
         help="Override RPC endpoint (optional).",
     )
-    args = parser.parse_args()
+    if config:
+        parser.set_defaults(**config)
+    args = parser.parse_args(remaining)
+
+    global _REQUEST_RETRIES, _REQUEST_BACKOFF
+    _REQUEST_RETRIES = max(1, int(args.retries))
+    _REQUEST_BACKOFF = max(0.1, float(args.retry_backoff))
 
     endpoint = _alchemy_endpoint(args.endpoint, args.notes_path)
     addresses = _read_addresses(Path(args.addresses_path))
@@ -901,27 +1020,32 @@ def main() -> None:
         raise SystemExit("No addresses found to process.")
 
     output_dir = Path(args.output_dir)
+    error_log_path = Path(args.error_log) if args.error_log else None
     for address in addresses:
-        payload = extract_for_address(
-            endpoint,
-            address,
-            days=args.days,
-            timeout=args.timeout,
-            max_count=args.max_count,
-            include_all_time_count=args.include_all_time_count,
-            all_time_max_pages=args.all_time_max_pages,
-            token_cache_path=Path(args.token_cache_path),
-            max_total_transfers=args.max_total_transfers,
-            fanout_levels=args.fanout_levels,
-            fanout_base_days=args.fanout_base_days,
-            fanout_base_tx=args.fanout_base_tx,
-            fanout_decay=args.fanout_decay,
-            fanout_max_nodes=args.fanout_max_nodes,
-            fanout_max_neighbors_per_node=args.fanout_max_neighbors_per_node,
-        )
-        out_path = output_dir / f"{address.lower()}.json"
-        _write_json(out_path, payload)
-        print(f"Wrote {out_path}")
+        try:
+            payload = extract_for_address(
+                endpoint,
+                address,
+                days=args.days,
+                timeout=args.timeout,
+                max_count=args.max_count,
+                include_all_time_count=args.include_all_time_count,
+                all_time_max_pages=args.all_time_max_pages,
+                token_cache_path=Path(args.token_cache_path),
+                max_total_transfers=args.max_total_transfers,
+                fanout_levels=args.fanout_levels,
+                fanout_base_days=args.fanout_base_days,
+                fanout_base_tx=args.fanout_base_tx,
+                fanout_decay=args.fanout_decay,
+                fanout_max_nodes=args.fanout_max_nodes,
+                fanout_max_neighbors_per_node=args.fanout_max_neighbors_per_node,
+            )
+            out_path = output_dir / f"{address.lower()}.json"
+            _write_json(out_path, payload)
+            _log(f"[extract] wrote={out_path}")
+        except Exception as exc:
+            _log(f"[extract] error address={address} err={exc}")
+            _append_error(error_log_path, address, str(exc))
 
 
 if __name__ == "__main__":

@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+import time
 import urllib.parse
 import urllib.request
+from urllib.error import HTTPError, URLError
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,7 @@ CONCENTRATION_MIN = 0.6
 STABLECOIN_AGE_DAYS = 90
 HIGH_COUNTERPARTY_MIN = 20
 CONSISTENT_ACTIVE_DAYS = 10
+MIN_SAMPLE_TX = 5
 
 
 def load_stablecoins(path: str) -> Dict[str, dict]:
@@ -66,16 +69,29 @@ def load_flagged_addresses(path: Optional[str]) -> set[str]:
     return addresses
 
 
-def _get_json(url: str, timeout: int) -> dict:
+def _get_json(url: str, timeout: int, retries: int = 3, backoff: float = 1.0) -> dict:
     req = urllib.request.Request(url, headers={"accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError) as exc:
+            last_exc = exc
+            if attempt >= retries - 1:
+                break
+            time.sleep(backoff * (2**attempt))
+    if last_exc:
+        raise last_exc
+    return {}
 
 
 def fetch_etherscan_tx_bounds(
     address: str,
     api_key: str,
     timeout: int = 10,
+    retries: int = 3,
+    backoff: float = 1.0,
 ) -> Tuple[Optional[int], Optional[int]]:
     base = "https://api.etherscan.io/api"
     params = {
@@ -88,14 +104,14 @@ def fetch_etherscan_tx_bounds(
         "apikey": api_key,
     }
     url = f"{base}?{urllib.parse.urlencode(params)}"
-    earliest = _get_json(url, timeout)
+    earliest = _get_json(url, timeout, retries=retries, backoff=backoff)
     earliest_ts = None
     if earliest.get("status") == "1" and earliest.get("result"):
         earliest_ts = int(earliest["result"][0].get("timeStamp") or 0) or None
 
     params["sort"] = "desc"
     url = f"{base}?{urllib.parse.urlencode(params)}"
-    latest = _get_json(url, timeout)
+    latest = _get_json(url, timeout, retries=retries, backoff=backoff)
     latest_ts = None
     if latest.get("status") == "1" and latest.get("result"):
         latest_ts = int(latest["result"][0].get("timeStamp") or 0) or None
@@ -278,6 +294,7 @@ def extract_features(
         "contract_interaction_density": contract_interaction_density,
         "known_bad_exposure": known_bad_exposure,
         "transfers_truncated": payload.get("transfers_truncated"),
+        "low_sample_flag": 0 < tx_count < MIN_SAMPLE_TX,
     }
     return features
 
@@ -318,6 +335,17 @@ def score_features(features: Dict[str, object]) -> tuple[int, List[Reason]]:
 
     if tx_count == 0:
         reasons.append(Reason("NO_RECENT_ACTIVITY", "No recent activity in window", 0))
+    elif features.get("low_sample_flag"):
+        reasons.append(Reason("LOW_SAMPLE", "Very few transfers; signal quality is limited", 0))
+
+    if features.get("transfers_truncated"):
+        reasons.append(Reason("WINDOW_TRUNCATED", "Transfer window hit the fetch cap", 0))
+
+    if features.get("low_sample_flag") and not features.get("known_bad_exposure"):
+        score = int(round(50 + (score - 50) * 0.5))
+
+    if not reasons:
+        reasons.append(Reason("NO_SIGNALS", "No strong risk signals detected", 0))
 
     score = max(0, min(100, score))
     reasons = sorted(reasons, key=lambda r: abs(r.weight), reverse=True)[:5]

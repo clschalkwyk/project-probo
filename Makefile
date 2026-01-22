@@ -1,4 +1,4 @@
-.PHONY: blocknumber blocknumber-json update-stablecoins extract-wallet-data extract-wallet-data-90d extract-wallet-data-all-time extract-120 extract-with-fanout analyze-extractions
+.PHONY: blocknumber blocknumber-json update-stablecoins update-exchanges extract-wallet-data extract-wallet-data-90d extract-wallet-data-all-time extract-120 extract-with-fanout analyze-extractions run-api
 
 blocknumber:
 	python3 -m probo.cli blocknumber
@@ -8,6 +8,9 @@ blocknumber-json:
 
 update-stablecoins:
 	python3 scripts/update_stablecoins.py
+
+update-exchanges:
+	python3 scripts/update_exchanges.py
 
 extract-wallet-data:
 	python3 scripts/extract_wallet_data.py
@@ -26,3 +29,6 @@ extract-with-fanout:
 
 analyze-extractions:
 	python3 scripts/analyze_extractions.py
+
+run-api:
+	uvicorn api.main:app --reload

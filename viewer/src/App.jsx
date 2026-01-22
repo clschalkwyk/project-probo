@@ -199,7 +199,22 @@ const nodeLabel = (node) => {
   return node.id.slice(0, 6);
 };
 
-const buildGraph = (payload) => {
+const _logCopyFallback = (value) => {
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  try {
+    document.execCommand("copy");
+  } finally {
+    document.body.removeChild(area);
+  }
+};
+
+const buildGraph = (payload, options = {}) => {
   if (!payload) return null;
   const transfers = payload.transfers || [];
   const sample = transfers.length > GRAPH_TRANSFER_LIMIT
@@ -231,7 +246,7 @@ const buildGraph = (payload) => {
     }
   };
 
-  const addLink = (source, target, type = "transfer") => {
+  const addLink = (source, target, type = "transfer", amount = null) => {
     const s = source.toLowerCase();
     const t = target.toLowerCase();
     if (!s || !t || s === t) return;
@@ -239,8 +254,17 @@ const buildGraph = (payload) => {
     const current = linkMap.get(key);
     if (current) {
       current.value += 1;
+      if (amount !== null && Number.isFinite(amount)) {
+        current.totalValue = (current.totalValue || 0) + amount;
+      }
     } else {
-      linkMap.set(key, { source: s, target: t, value: 1, type });
+      linkMap.set(key, {
+        source: s,
+        target: t,
+        value: 1,
+        type,
+        totalValue: amount !== null && Number.isFinite(amount) ? amount : null,
+      });
     }
   };
 
@@ -250,7 +274,7 @@ const buildGraph = (payload) => {
     if (fromAddr && toAddr) {
       addNode(fromAddr, "address");
       addNode(toAddr, "address");
-      addLink(fromAddr, toAddr, "transfer");
+      addLink(fromAddr, toAddr, "transfer", parseAmount(item.value));
     }
     const rawContract = item.rawContract?.address;
     if (rawContract) {
@@ -260,8 +284,22 @@ const buildGraph = (payload) => {
     if (!rawContract && asset) {
       const coinId = `coin:${asset}`;
       addNode(coinId, "coin", asset);
-      if (fromAddr) coinEdgeMap.set(`${coinId}::${fromAddr}`, (coinEdgeMap.get(`${coinId}::${fromAddr}`) || 0) + 1);
-      if (toAddr) coinEdgeMap.set(`${coinId}::${toAddr}`, (coinEdgeMap.get(`${coinId}::${toAddr}`) || 0) + 1);
+      if (fromAddr) {
+        const key = `${coinId}::${fromAddr}`;
+        const current = coinEdgeMap.get(key) || { count: 0, total: 0 };
+        coinEdgeMap.set(key, {
+          count: current.count + 1,
+          total: current.total + parseAmount(item.value),
+        });
+      }
+      if (toAddr) {
+        const key = `${coinId}::${toAddr}`;
+        const current = coinEdgeMap.get(key) || { count: 0, total: 0 };
+        coinEdgeMap.set(key, {
+          count: current.count + 1,
+          total: current.total + parseAmount(item.value),
+        });
+      }
     }
   });
 
@@ -315,35 +353,96 @@ const buildGraph = (payload) => {
     if (link) link.value = count;
   });
 
-  coinEdgeMap.forEach((count, key) => {
+  coinEdgeMap.forEach((payload, key) => {
     const [coinId, addr] = key.split("::");
-    addLink(coinId, addr, "coin");
+    addLink(coinId, addr, "coin", payload.total);
     const linkKey = `${coinId}::${addr}::coin`;
     const link = linkMap.get(linkKey);
-    if (link) link.value = count;
+    if (link) {
+      link.value = payload.count;
+      link.totalValue = payload.total;
+    }
   });
 
   const nodes = Array.from(nodeMap.values());
   const links = Array.from(linkMap.values());
 
-  nodes.forEach((node) => {
+  const typeFilter = {
+    address: options.showAddress ?? true,
+    contract: options.showContract ?? true,
+    token: options.showToken ?? true,
+    coin: options.showCoin ?? true,
+  };
+  const linkFilter = {
+    transfer: options.showTransfer ?? true,
+    token: options.showTokenLink ?? true,
+    balance: options.showBalance ?? true,
+    coin: options.showCoinLink ?? true,
+  };
+
+  const baseNodes = nodes.filter(
+    (node) => node.isSeed || typeFilter[node.type] !== false
+  );
+  const baseKeep = new Set(baseNodes.map((node) => node.id));
+  const baseLinks = links.filter(
+    (link) =>
+      linkFilter[link.type] !== false &&
+      baseKeep.has(link.source) &&
+      baseKeep.has(link.target)
+  );
+
+  const baseNodeMap = new Map(baseNodes.map((node) => [node.id, node]));
+  baseNodes.forEach((node) => {
     node.degree = 0;
   });
-  links.forEach((link) => {
-    const source = nodeMap.get(link.source);
-    const target = nodeMap.get(link.target);
+  baseLinks.forEach((link) => {
+    const source = baseNodeMap.get(link.source);
+    const target = baseNodeMap.get(link.target);
     if (source) source.degree += link.value;
     if (target) target.degree += link.value;
   });
 
-  const rankedNodes = nodes
+  const maxNodes = options.maxNodes || GRAPH_LIMITS.maxNodes;
+  const maxLinks = options.maxLinks || GRAPH_LIMITS.maxLinks;
+
+  const rankedNodes = baseNodes
     .sort((a, b) => b.degree - a.degree)
-    .slice(0, GRAPH_LIMITS.maxNodes);
+    .slice(0, maxNodes);
   const keep = new Set(rankedNodes.map((node) => node.id));
-  const filteredLinks = links
+  const filteredLinks = baseLinks
     .filter((link) => keep.has(link.source) && keep.has(link.target))
     .sort((a, b) => b.value - a.value)
-    .slice(0, GRAPH_LIMITS.maxLinks);
+    .slice(0, maxLinks);
+
+  const rankedNodeMap = new Map(rankedNodes.map((node) => [node.id, node]));
+  rankedNodes.forEach((node) => {
+    node.degree = 0;
+    node.inDegree = 0;
+    node.outDegree = 0;
+    node.linkTypes = {};
+    node.inValue = 0;
+    node.outValue = 0;
+  });
+  filteredLinks.forEach((link) => {
+    const source = rankedNodeMap.get(link.source);
+    const target = rankedNodeMap.get(link.target);
+    if (source) {
+      source.degree += link.value;
+      source.outDegree += link.value;
+      source.linkTypes[link.type] = (source.linkTypes[link.type] || 0) + link.value;
+      if (link.totalValue !== null && Number.isFinite(link.totalValue)) {
+        source.outValue += link.totalValue;
+      }
+    }
+    if (target) {
+      target.degree += link.value;
+      target.inDegree += link.value;
+      target.linkTypes[link.type] = (target.linkTypes[link.type] || 0) + link.value;
+      if (link.totalValue !== null && Number.isFinite(link.totalValue)) {
+        target.inValue += link.totalValue;
+      }
+    }
+  });
 
   return {
     nodes: rankedNodes,
@@ -354,16 +453,27 @@ const buildGraph = (payload) => {
   };
 };
 
-const ForceGraph = ({ graph }) => {
+const ForceGraph = ({ graph, degreeStats }) => {
   const canvasRef = useRef(null);
   const wrapperRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isActive, setIsActive] = useState(false);
+  const [showLabels, setShowLabels] = useState(true);
+  const [isPaused, setIsPaused] = useState(false);
   const [hoveredNode, setHoveredNode] = useState(null);
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
+  const [selectedNode, setSelectedNode] = useState(null);
   const hoveredRef = useRef(null);
+  const selectedNodeRef = useRef(null);
   const transformRef = useRef({ scale: 1, x: 0, y: 0 });
   const userTransformRef = useRef(false);
+  const simulationRef = useRef(null);
+  const fitRef = useRef(null);
+  const redrawRef = useRef(null);
+
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode;
+  }, [selectedNode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -382,7 +492,6 @@ const ForceGraph = ({ graph }) => {
     const nodes = graph.nodes.map((node) => ({ ...node }));
     const links = graph.links.map((link) => ({ ...link }));
     let draggingNode = null;
-    let selectedNode = null;
     let panning = false;
     let panStart = { x: 0, y: 0 };
     let rafId = null;
@@ -401,6 +510,8 @@ const ForceGraph = ({ graph }) => {
       .force("collide", forceCollide(14))
       .force("x", forceX(width / 2).strength(0.06))
       .force("y", forceY(height / 2).strength(0.06));
+
+    simulationRef.current = simulation;
 
     const draw = () => {
       const { scale, x, y } = transformRef.current;
@@ -504,7 +615,7 @@ const ForceGraph = ({ graph }) => {
           context.setLineDash([]);
         }
 
-        if (node.isSeed || node.type !== "address") {
+        if (showLabels && (node.isSeed || node.type !== "address")) {
           context.fillStyle = "#2d221a";
           context.font = "11px Space Grotesk";
           context.fillText(nodeLabel(node), node.x + radius + 4, node.y + 3);
@@ -515,8 +626,8 @@ const ForceGraph = ({ graph }) => {
 
     simulation.on("tick", draw);
 
-    const fitToView = () => {
-      if (userTransformRef.current) return;
+    const fitToView = (force = false) => {
+      if (userTransformRef.current && !force) return;
       let minX = Infinity;
       let maxX = -Infinity;
       let minY = Infinity;
@@ -536,6 +647,7 @@ const ForceGraph = ({ graph }) => {
       const y = height / 2 - ((minY + maxY) / 2) * scale;
       transformRef.current = { scale, x, y };
     };
+    fitRef.current = (force = false) => fitToView(force);
 
     const resize = () => {
       width = wrapper.clientWidth;
@@ -584,6 +696,7 @@ const ForceGraph = ({ graph }) => {
       if (rafId) cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(draw);
     };
+    redrawRef.current = redraw;
 
     const onMove = (event) => {
       const pos = getPointer(event);
@@ -612,9 +725,6 @@ const ForceGraph = ({ graph }) => {
       const found = findNode(pos);
       hoveredRef.current = found;
       setHoveredNode(found);
-      if (found) {
-        selectedNode = found;
-      }
       redraw();
     };
 
@@ -623,12 +733,13 @@ const ForceGraph = ({ graph }) => {
       const found = findNode(pos);
       if (found) {
         draggingNode = found;
-        selectedNode = found;
+        setSelectedNode(found);
         const { scale, x, y } = transformRef.current;
         draggingNode.fx = (pos.x - x) / scale;
         draggingNode.fy = (pos.y - y) / scale;
         simulation.alphaTarget(0.3).restart();
       } else {
+        setSelectedNode(null);
         panning = true;
         panStart = pos;
       }
@@ -644,22 +755,24 @@ const ForceGraph = ({ graph }) => {
 
     const onKey = (event) => {
       if (event.key.toLowerCase() !== "p") return;
-      if (!selectedNode) return;
-      if (selectedNode.fx == null && selectedNode.fy == null) {
-        selectedNode.fx = selectedNode.x;
-        selectedNode.fy = selectedNode.y;
+      const node = selectedNodeRef.current;
+      if (!node) return;
+      if (node.fx == null && node.fy == null) {
+        node.fx = node.x;
+        node.fy = node.y;
       } else {
-        selectedNode.fx = null;
-        selectedNode.fy = null;
+        node.fx = null;
+        node.fy = null;
       }
       redraw();
     };
 
     const onWheel = (event) => {
       event.preventDefault();
-      const delta = Math.sign(event.deltaY);
       const scale = transformRef.current.scale;
-      const nextScale = Math.min(3, Math.max(0.4, scale - delta * 0.1));
+      const zoomIntensity = 0.0015;
+      const delta = event.deltaY;
+      const nextScale = Math.min(3, Math.max(0.4, scale * (1 - delta * zoomIntensity)));
       if (nextScale === scale) return;
       const pos = getPointer(event);
       const { x, y } = transformRef.current;
@@ -703,7 +816,7 @@ const ForceGraph = ({ graph }) => {
       clearTimeout(fitTimer);
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [graph, isActive]);
+  }, [graph, isActive, showLabels]);
 
   useEffect(() => {
     const onChange = () => {
@@ -717,25 +830,80 @@ const ForceGraph = ({ graph }) => {
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
+  useEffect(() => {
+    const sim = simulationRef.current;
+    if (!sim) return;
+    if (isPaused) {
+      sim.stop();
+    } else if (isActive) {
+      sim.alpha(0.8).restart();
+    }
+  }, [isPaused, isActive]);
+
   if (!graph) return null;
 
   return (
     <div className="graph" ref={wrapperRef}>
       <div className="graph-controls">
-        <button
-          className="ghost"
-          onClick={() => {
-            if (!wrapperRef.current) return;
-            if (document.fullscreenElement) {
-              document.exitFullscreen();
-              return;
-            }
-            setIsActive(true);
-            wrapperRef.current.requestFullscreen();
-          }}
-        >
-          {isFullscreen ? "Exit fullscreen" : "Launch graph"}
-        </button>
+        <div className="graph-controls-group">
+          <button
+            className="ghost"
+            onClick={() => {
+              if (!wrapperRef.current) return;
+              if (document.fullscreenElement) {
+                document.exitFullscreen();
+                return;
+              }
+              setIsActive(true);
+              wrapperRef.current.requestFullscreen();
+            }}
+          >
+            {isFullscreen ? "Exit fullscreen" : "Launch graph"}
+          </button>
+          <button
+            className="ghost"
+            onClick={() => {
+              userTransformRef.current = false;
+              fitRef.current?.(true);
+              redrawRef.current?.();
+            }}
+          >
+            Fit
+          </button>
+          <button
+            className="ghost"
+            onClick={() => {
+              const sim = simulationRef.current;
+              if (!sim) return;
+              setIsPaused((prev) => {
+                const next = !prev;
+                if (next) {
+                  sim.stop();
+                } else {
+                  sim.alpha(0.8).restart();
+                }
+                return next;
+              });
+            }}
+          >
+            {isPaused ? "Resume" : "Pause"}
+          </button>
+          <button
+            className="ghost"
+            onClick={() => {
+              const sim = simulationRef.current;
+              if (sim) sim.alpha(0.9).restart();
+            }}
+          >
+            Reheat
+          </button>
+          <button
+            className="ghost"
+            onClick={() => setShowLabels((prev) => !prev)}
+          >
+            Labels {showLabels ? "on" : "off"}
+          </button>
+        </div>
         <span className="hint muted">Scroll zoom, drag pan, press P to pin</span>
       </div>
       {isActive ? (
@@ -747,8 +915,78 @@ const ForceGraph = ({ graph }) => {
               style={{ left: hoverPos.x + 12, top: hoverPos.y + 12 }}
             >
               <div className="mono">{hoveredNode.id}</div>
-              <div className="muted">type: {hoveredNode.type}</div>
-              <div className="muted">degree: {hoveredNode.degree}</div>
+              <div className="muted">
+                type: {hoveredNode.type}
+                {hoveredNode.isSeed ? " (seed)" : ""}
+              </div>
+              {hoveredNode.label && hoveredNode.type !== "address" && (
+                <div className="muted">label: {hoveredNode.label}</div>
+              )}
+              <div className="muted">
+                degree: {hoveredNode.degree} (in {hoveredNode.inDegree}, out {hoveredNode.outDegree})
+              </div>
+              <div className="muted">
+                value in/out: {formatNumber(hoveredNode.inValue, 4)} / {formatNumber(hoveredNode.outValue, 4)}
+              </div>
+              <div className="muted">
+                links:{" "}
+                {Object.entries(hoveredNode.linkTypes || {})
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([type, count]) => `${type} ${count}`)
+                  .join(", ") || "n/a"}
+              </div>
+            </div>
+          )}
+          {selectedNode && (
+            <div className="node-panel">
+              <div className="panel-row">
+                <strong>Selected</strong>
+                <div className="panel-actions">
+                  {selectedNode.fx != null && selectedNode.fy != null && (
+                    <a
+                      className="ghost"
+                      href={`https://etherscan.io/address/${selectedNode.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Etherscan
+                    </a>
+                  )}
+                  <button
+                    className="ghost"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(selectedNode.id);
+                      } catch (err) {
+                        _logCopyFallback(selectedNode.id);
+                      }
+                    }}
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div className="mono">{selectedNode.id}</div>
+              <div className="muted">
+                type: {selectedNode.type}
+                {selectedNode.isSeed ? " (seed)" : ""}
+              </div>
+              {selectedNode.label && selectedNode.type !== "address" && (
+                <div className="muted">label: {selectedNode.label}</div>
+              )}
+              <div className="muted">
+                degree: {selectedNode.degree} (in {selectedNode.inDegree}, out {selectedNode.outDegree})
+              </div>
+              <div className="muted">
+                value in/out: {formatNumber(selectedNode.inValue, 4)} / {formatNumber(selectedNode.outValue, 4)}
+              </div>
+              <div className="muted">
+                links:{" "}
+                {Object.entries(selectedNode.linkTypes || {})
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([type, count]) => `${type} ${count}`)
+                  .join(", ") || "n/a"}
+              </div>
             </div>
           )}
         </>
@@ -766,7 +1004,10 @@ const ForceGraph = ({ graph }) => {
         <span className="legend-line transfer">Transfer</span>
         <span className="legend-line token">Token link</span>
         <span className="legend-line balance">Balance</span>
-        <span className="legend-note">Size/color = degree</span>
+        <span className="legend-line coin">Coin</span>
+        <span className="legend-note">
+          Degree: {degreeStats?.min ?? 0} / {degreeStats?.mid ?? 0} / {degreeStats?.max ?? 0}
+        </span>
       </div>
     </div>
   );
@@ -792,9 +1033,24 @@ export default function App() {
   const [activeId, setActiveId] = useState(null);
   const [payload, setPayload] = useState(null);
   const [error, setError] = useState("");
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const [limit, setLimit] = useState(150);
   const [isDragging, setIsDragging] = useState(false);
+  const [direction, setDirection] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [graphSettings, setGraphSettings] = useState({
+    maxNodes: GRAPH_LIMITS.maxNodes,
+    maxLinks: GRAPH_LIMITS.maxLinks,
+    showAddress: true,
+    showContract: true,
+    showToken: true,
+    showCoin: true,
+    showTransfer: true,
+    showTokenLink: true,
+    showBalance: true,
+    showCoinLink: true,
+  });
 
   const refreshFiles = useCallback(async () => {
     const list = await listFiles();
@@ -851,15 +1107,39 @@ export default function App() {
   };
 
   const stats = useMemo(() => deriveStats(payload || {}), [payload]);
-  const graph = useMemo(() => buildGraph(payload), [payload]);
+  const graph = useMemo(() => buildGraph(payload, graphSettings), [payload, graphSettings]);
+  const degreeStats = useMemo(() => {
+    if (!graph?.nodes?.length) return { min: 0, mid: 0, max: 0 };
+    const degrees = graph.nodes.map((node) => node.degree || 0).sort((a, b) => a - b);
+    const min = degrees[0] ?? 0;
+    const max = degrees[degrees.length - 1] ?? 0;
+    const mid = degrees[Math.floor(degrees.length / 2)] ?? 0;
+    return { min, mid, max };
+  }, [graph]);
+
+  const categoryOptions = useMemo(() => {
+    if (!payload?.transfers?.length) return [];
+    const categories = new Set(payload.transfers.map((item) => item.category || "unknown"));
+    return Array.from(categories).sort();
+  }, [payload]);
 
   const filteredTransfers = useMemo(() => {
     if (!payload?.transfers) return [];
     const term = filter.trim().toLowerCase();
     const list = payload.transfers;
-    if (!term) return list.slice(0, limit);
+    const seed = safeLower(payload.address);
     return list
       .filter((item) => {
+        if (categoryFilter !== "all" && (item.category || "unknown") !== categoryFilter) {
+          return false;
+        }
+        if (direction !== "all") {
+          const fromAddr = safeLower(item.from);
+          const toAddr = safeLower(item.to);
+          if (direction === "in" && toAddr !== seed) return false;
+          if (direction === "out" && fromAddr !== seed) return false;
+        }
+        if (!term) return true;
         return [
           item.hash,
           item.category,
@@ -871,9 +1151,35 @@ export default function App() {
           .some((value) => String(value).toLowerCase().includes(term));
       })
       .slice(0, limit);
-  }, [payload, filter, limit]);
+  }, [payload, filter, limit, direction, categoryFilter]);
 
   const maxBucket = Math.max(1, ...stats.dayBuckets.map(([, count]) => count));
+  const hasRisk =
+    Boolean(payload?.label) ||
+    payload?.score !== undefined ||
+    (payload?.reasons && payload.reasons.length > 0) ||
+    Boolean(payload?.infra);
+  const isPossiblePhishing =
+    Boolean(payload?.features?.known_bad_exposure) ||
+    Boolean(payload?.reasons?.some((reason) => reason.code === "KNOWN_BAD")) ||
+    Boolean(
+      payload?.infra?.explain?.some((item) =>
+        String(item).toLowerCase().includes("phishing")
+      )
+    );
+  const featureList = [
+    ["wallet_age_days", "Wallet age (days)"],
+    ["tx_count_30", "Tx count (window)"],
+    ["active_days_30", "Active days (window)"],
+    ["unique_counterparties_30", "Unique counterparties"],
+    ["top_counterparty_concentration", "Top counterparty share"],
+    ["erc20_count", "Token balances"],
+    ["stablecoin_balance_flag", "Stablecoin present"],
+    ["dust_only_flag", "Dust-only balances"],
+    ["contract_interaction_density", "Contract interaction density"],
+    ["known_bad_exposure", "Flagged exposure"],
+    ["transfers_truncated", "Transfer cap hit"],
+  ];
 
   return (
     <div className="app">
@@ -912,41 +1218,12 @@ export default function App() {
       </header>
 
       <section className="grid">
-        <aside className="panel">
-          <div className="panel-header">
-            <h2>Cached files</h2>
-            <button className="ghost" onClick={() => clearFiles().then(refreshFiles)}>
-              Clear
+        <main className="panel">
+          <div className="panel-toolbar">
+            <button className="ghost" onClick={() => setIsDrawerOpen(true)}>
+              Cached files
             </button>
           </div>
-          <div className="file-list">
-            {files.length === 0 && <p className="muted">No cached JSON yet.</p>}
-            {files.map((file) => (
-              <button
-                key={file.id}
-                className={`file-item ${file.id === activeId ? "active" : ""}`}
-                onClick={() => handleSelect(file.id)}
-              >
-                <div>
-                  <strong>{file.name}</strong>
-                  <span>{new Date(file.createdAt).toLocaleString()}</span>
-                </div>
-                <span className="mono">{file.id.slice(-6)}</span>
-                <span
-                  className="delete"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleDelete(file.id);
-                  }}
-                >
-                  x
-                </span>
-              </button>
-            ))}
-          </div>
-        </aside>
-
-        <main className="panel">
           {!payload && (
             <div className="empty">
               <h2>Upload a JSON file</h2>
@@ -968,6 +1245,96 @@ export default function App() {
                   Window {payload.window?.from_iso} {"->"} {payload.window?.to_iso}
                 </div>
               </div>
+
+              {hasRisk && (
+                <section className="risk-panel">
+                  <div className="panel-header">
+                    <h3>Risk assessment</h3>
+                    <div className="pill-row">
+                      <div className="pill">
+                        {payload.label ? `Label: ${payload.label}` : "Label: n/a"}
+                      </div>
+                      {isPossiblePhishing && (
+                        <div className="pill warn">Possible phishing</div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="risk-grid">
+                    <div>
+                      <p className="muted">Score</p>
+                      <p className="stat">{payload.score ?? "n/a"}</p>
+                      <p className="muted">0-100 risk score. Lower is safer.</p>
+                    </div>
+                    <div>
+                      <p className="muted">Reasons</p>
+                      {payload.reasons?.length ? (
+                        <ul className="risk-reasons">
+                          {payload.reasons.map((reason) => (
+                            <li key={reason.code || reason.detail}>
+                              <strong>{reason.code || "SIGNAL"}</strong>
+                              {reason.detail ? ` — ${reason.detail}` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="muted">No explicit reasons in this file.</p>
+                      )}
+                    </div>
+                    {payload.infra && (
+                      <div>
+                        <p className="muted">Infra detection</p>
+                        <p className="pill">
+                          {payload.infra.probobility || "UNKNOWN"}
+                        </p>
+                        {payload.infra.explain?.length ? (
+                          <ul className="risk-reasons">
+                            {payload.infra.explain.map((item) => (
+                              <li key={item}>{item}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="muted">No infra highlights.</p>
+                        )}
+                      </div>
+                    )}
+                    <div>
+                      <p className="muted">Base features</p>
+                      {payload.features ? (
+                        <ul className="risk-features">
+                          {featureList
+                            .filter(([key]) => payload.features[key] !== undefined)
+                            .map(([key, label]) => {
+                              const value = payload.features[key];
+                              const display =
+                                typeof value === "boolean"
+                                  ? value
+                                    ? "yes"
+                                    : "no"
+                                  : typeof value === "number"
+                                    ? Number.isFinite(value)
+                                      ? value.toFixed(
+                                          key === "top_counterparty_concentration" ||
+                                          key === "contract_interaction_density"
+                                            ? 2
+                                            : 0
+                                        )
+                                      : "n/a"
+                                    : value ?? "n/a";
+                              return (
+                                <li key={key}>
+                                  <span>{label}</span>
+                                  <strong>{display}</strong>
+                                </li>
+                              );
+                            })}
+                        </ul>
+                      ) : (
+                        <p className="muted">No base features in this file.</p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              )}
 
               <div className="stats">
                 <div>
@@ -1000,6 +1367,13 @@ export default function App() {
                   <h3>Last seen</h3>
                   <p className="stat">{formatIso(stats.lastSeen)}</p>
                   <span className="muted">first {formatIso(stats.firstSeen)}</span>
+                </div>
+                <div>
+                  <h3>Total flow</h3>
+                  <p className="stat">{formatNumber(stats.totalIn, 4)}</p>
+                  <span className="muted">inflow</span>
+                  <p className="stat">{formatNumber(stats.totalOut, 4)}</p>
+                  <span className="muted">outflow</span>
                 </div>
               </div>
 
@@ -1058,34 +1432,7 @@ export default function App() {
                     ))}
                   </ul>
                 </div>
-                <div className="totals">
-                  <h3>Total flow</h3>
-                  <p className="stat">{formatNumber(stats.totalIn, 4)}</p>
-                  <span className="muted">inflow</span>
-                  <p className="stat">{formatNumber(stats.totalOut, 4)}</p>
-                  <span className="muted">outflow</span>
-                </div>
               </section>
-
-              {payload.fanout && (
-                <section className="fanout">
-                  <h3>Fan-out</h3>
-                  <div className="fanout-grid">
-                    <div>
-                      <span>Nodes</span>
-                      <strong>{payload.fanout.nodes?.length || 0}</strong>
-                    </div>
-                    <div>
-                      <span>Edges</span>
-                      <strong>{payload.fanout.edges?.length || 0}</strong>
-                    </div>
-                    <div>
-                      <span>Capped</span>
-                      <strong>{String(payload.fanout.capped)}</strong>
-                    </div>
-                  </div>
-                </section>
-              )}
 
               {graph && (
                 <section className="graph-panel">
@@ -1096,12 +1443,117 @@ export default function App() {
                     </div>
                     <span className="pill">Force layout</span>
                   </div>
+                  <div className="graph-filters">
+                    <div className="filter-group">
+                      <span className="muted">Nodes</span>
+                      {[
+                        ["showAddress", "Address"],
+                        ["showContract", "Contract"],
+                        ["showToken", "Token"],
+                        ["showCoin", "Coin"],
+                      ].map(([key, label]) => (
+                        <label key={key}>
+                          <input
+                            type="checkbox"
+                            checked={graphSettings[key]}
+                            onChange={(event) =>
+                              setGraphSettings((prev) => ({
+                                ...prev,
+                                [key]: event.target.checked,
+                              }))
+                            }
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                    <div className="filter-group">
+                      <span className="muted">Links</span>
+                      {[
+                        ["showTransfer", "Transfer"],
+                        ["showTokenLink", "Token"],
+                        ["showBalance", "Balance"],
+                        ["showCoinLink", "Coin"],
+                      ].map(([key, label]) => (
+                        <label key={key}>
+                          <input
+                            type="checkbox"
+                            checked={graphSettings[key]}
+                            onChange={(event) =>
+                              setGraphSettings((prev) => ({
+                                ...prev,
+                                [key]: event.target.checked,
+                              }))
+                            }
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                    <div className="filter-group compact">
+                      <label>
+                        Max nodes
+                        <select
+                          value={graphSettings.maxNodes}
+                          onChange={(event) =>
+                            setGraphSettings((prev) => ({
+                              ...prev,
+                              maxNodes: Number(event.target.value),
+                            }))
+                          }
+                        >
+                          {[120, 240, 360, 480].map((value) => (
+                            <option key={value} value={value}>
+                              {value}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Max links
+                        <select
+                          value={graphSettings.maxLinks}
+                          onChange={(event) =>
+                            setGraphSettings((prev) => ({
+                              ...prev,
+                              maxLinks: Number(event.target.value),
+                            }))
+                          }
+                        >
+                          {[200, 380, 520, 700].map((value) => (
+                            <option key={value} value={value}>
+                              {value}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        className="ghost"
+                        onClick={() =>
+                          setGraphSettings({
+                            maxNodes: GRAPH_LIMITS.maxNodes,
+                            maxLinks: GRAPH_LIMITS.maxLinks,
+                            showAddress: true,
+                            showContract: true,
+                            showToken: true,
+                            showCoin: true,
+                            showTransfer: true,
+                            showTokenLink: true,
+                            showBalance: true,
+                            showCoinLink: true,
+                          })
+                        }
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </div>
                   {graph.sampled && (
                     <p className="muted">
                       Graph sample: {graph.sampleSize} / {graph.totalTransfers} transfers
                     </p>
                   )}
-                  <ForceGraph graph={graph} />
+                  <ForceGraph graph={graph} degreeStats={degreeStats} />
                 </section>
               )}
 
@@ -1114,6 +1566,31 @@ export default function App() {
                       value={filter}
                       onChange={(event) => setFilter(event.target.value)}
                     />
+                    <select
+                      value={direction}
+                      onChange={(event) => setDirection(event.target.value)}
+                    >
+                      {[
+                        ["all", "All directions"],
+                        ["in", "Inbound"],
+                        ["out", "Outbound"],
+                      ].map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={categoryFilter}
+                      onChange={(event) => setCategoryFilter(event.target.value)}
+                    >
+                      <option value="all">All categories</option>
+                      {categoryOptions.map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
                     <select
                       value={limit}
                       onChange={(event) => setLimit(Number(event.target.value))}
@@ -1151,6 +1628,62 @@ export default function App() {
           )}
         </main>
       </section>
+
+      {isDrawerOpen && (
+        <div
+          className="drawer-backdrop"
+          onClick={() => setIsDrawerOpen(false)}
+          role="presentation"
+        >
+          <aside
+            className="drawer"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="drawer-header">
+              <h2>Cached files</h2>
+              <div className="drawer-actions">
+                <button
+                  className="ghost"
+                  onClick={() => clearFiles().then(refreshFiles)}
+                >
+                  Clear
+                </button>
+                <button className="ghost" onClick={() => setIsDrawerOpen(false)}>
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="file-list">
+              {files.length === 0 && <p className="muted">No cached JSON yet.</p>}
+              {files.map((file) => (
+                <button
+                  key={file.id}
+                  className={`file-item ${file.id === activeId ? "active" : ""}`}
+                  onClick={() => {
+                    handleSelect(file.id);
+                    setIsDrawerOpen(false);
+                  }}
+                >
+                  <div>
+                    <strong>{file.name}</strong>
+                    <span>{new Date(file.createdAt).toLocaleString()}</span>
+                  </div>
+                  <span className="mono">{file.id.slice(-6)}</span>
+                  <span
+                    className="delete"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleDelete(file.id);
+                    }}
+                  >
+                    x
+                  </span>
+                </button>
+              ))}
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   );
 }
