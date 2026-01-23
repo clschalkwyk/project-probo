@@ -17,7 +17,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from probo.analysis import (
     analyze_payload,
     fetch_etherscan_tx_bounds,
-    load_flagged_addresses,
     load_stablecoins,
 )
 from probo.blocknumber import _load_dotenv
@@ -78,11 +77,6 @@ def main() -> None:
         help="Path to stablecoin list JSON.",
     )
     parser.add_argument(
-        "--flagged-path",
-        default=None,
-        help="Optional path to flagged address list.",
-    )
-    parser.add_argument(
         "--dust-threshold",
         type=float,
         default=0.001,
@@ -129,8 +123,6 @@ def main() -> None:
     args = parser.parse_args(remaining)
 
     stablecoins = load_stablecoins(args.stablecoins_path)
-    flagged = load_flagged_addresses(args.flagged_path)
-
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
     if not input_dir.exists():
@@ -149,16 +141,11 @@ def main() -> None:
         result = analyze_payload(
             payload,
             stablecoins=stablecoins,
-            flagged=flagged,
             dust_threshold=args.dust_threshold,
         )
         infra = None
         if args.infra:
-            risk_memory = {
-                "known_phishing": result.address.lower() in flagged,
-                "known_scam": result.address.lower() in flagged,
-            }
-            infra = summarize_infra(payload, risk_memory=risk_memory)
+            infra = summarize_infra(payload)
         etherscan_info = None
         if args.etherscan_enrich and etherscan_key:
             try:

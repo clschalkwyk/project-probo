@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import time
@@ -39,6 +39,10 @@ STABLECOIN_AGE_DAYS = 90
 HIGH_COUNTERPARTY_MIN = 20
 CONSISTENT_ACTIVE_DAYS = 10
 MIN_SAMPLE_TX = 5
+ACCELERATION_RECENT_DAYS = 7
+ACCELERATION_BASELINE_DAYS = 14
+ACCELERATION_MIN_TOTAL = 25
+ACCELERATION_RATIO = 2.0
 
 
 def load_stablecoins(path: str) -> Dict[str, dict]:
@@ -52,21 +56,6 @@ def load_stablecoins(path: str) -> Dict[str, dict]:
         if address:
             stablecoins[address.lower()] = item
     return stablecoins
-
-
-def load_flagged_addresses(path: Optional[str]) -> set[str]:
-    if not path:
-        return set()
-    file_path = Path(path)
-    if not file_path.exists():
-        return set()
-    addresses = set()
-    for line in file_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        addresses.add(line.lower())
-    return addresses
 
 
 def _get_json(url: str, timeout: int, retries: int = 3, backoff: float = 1.0) -> dict:
@@ -198,10 +187,41 @@ def _total_flow(address: str, transfers: Sequence[dict]) -> tuple[float, float]:
     return total_in, total_out
 
 
+def _acceleration_stats(timestamps: Sequence[int]) -> tuple[Optional[float], bool]:
+    if not timestamps:
+        return None, False
+    max_ts = max(timestamps)
+    max_date = datetime.fromtimestamp(max_ts, tz=timezone.utc).date()
+    recent_start = max_date - timedelta(days=ACCELERATION_RECENT_DAYS - 1)
+    baseline_start = recent_start - timedelta(days=ACCELERATION_BASELINE_DAYS)
+
+    daily_counts: Dict[datetime.date, int] = {}
+    for ts in timestamps:
+        day = datetime.fromtimestamp(ts, tz=timezone.utc).date()
+        daily_counts[day] = daily_counts.get(day, 0) + 1
+
+    recent_total = 0
+    baseline_total = 0
+    for day, count in daily_counts.items():
+        if day >= recent_start:
+            recent_total += count
+        elif baseline_start <= day < recent_start:
+            baseline_total += count
+
+    if recent_total < ACCELERATION_MIN_TOTAL:
+        return None, False
+
+    baseline_avg = baseline_total / ACCELERATION_BASELINE_DAYS
+    recent_avg = recent_total / ACCELERATION_RECENT_DAYS
+    if baseline_avg == 0:
+        return None, True
+    ratio = recent_avg / baseline_avg
+    return ratio, ratio >= ACCELERATION_RATIO
+
+
 def extract_features(
     payload: dict,
     stablecoins: Dict[str, dict],
-    flagged: set[str],
     dust_threshold: float = DEFAULT_DUST_THRESHOLD,
 ) -> Dict[str, object]:
     address = (payload.get("address") or "").lower()
@@ -211,6 +231,7 @@ def extract_features(
     token_metadata = payload.get("token_metadata") or {}
 
     timestamps = [ts for ts in (_transfer_timestamp(t) for t in transfers) if ts is not None]
+    acceleration_ratio, acceleration_flag = _acceleration_stats(timestamps)
     active_days = len(
         {
             datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
@@ -269,13 +290,6 @@ def extract_features(
             contract_interactions += 1
     contract_interaction_density = contract_interactions / tx_count if tx_count else 0.0
 
-    known_bad_exposure = False
-    if flagged:
-        for counterparty in counterparties.keys():
-            if counterparty in flagged:
-                known_bad_exposure = True
-                break
-
     features = {
         "wallet_age_days": wallet_age_days,
         "active_days_30": active_days,
@@ -292,7 +306,8 @@ def extract_features(
             and tx_count >= BURST_TX_COUNT
         ),
         "contract_interaction_density": contract_interaction_density,
-        "known_bad_exposure": known_bad_exposure,
+        "tx_acceleration_ratio": acceleration_ratio,
+        "tx_acceleration_flag": acceleration_flag,
         "transfers_truncated": payload.get("transfers_truncated"),
         "low_sample_flag": 0 < tx_count < MIN_SAMPLE_TX,
     }
@@ -308,13 +323,13 @@ def score_features(features: Dict[str, object]) -> tuple[int, List[Reason]]:
         score += 20
         reasons.append(Reason("FRESH_BURST", "Fresh wallet with burst activity", 20))
 
-    if features.get("known_bad_exposure"):
-        score += 35
-        reasons.append(Reason("KNOWN_BAD", "Exposure to flagged address", 35))
-
     if features.get("dust_only_flag"):
         score += 10
         reasons.append(Reason("DUST_ONLY", "Only dust-level token balances", 10))
+
+    if features.get("tx_acceleration_flag"):
+        score += 15
+        reasons.append(Reason("ACCELERATION", "Rapid increase in activity", 15))
 
     unique_counterparties = features.get("unique_counterparties_30") or 0
     top_concentration = features.get("top_counterparty_concentration") or 0
@@ -341,11 +356,11 @@ def score_features(features: Dict[str, object]) -> tuple[int, List[Reason]]:
     if features.get("transfers_truncated"):
         reasons.append(Reason("WINDOW_TRUNCATED", "Transfer window hit the fetch cap", 0))
 
-    if features.get("low_sample_flag") and not features.get("known_bad_exposure"):
+    if features.get("low_sample_flag"):
         score = int(round(50 + (score - 50) * 0.5))
 
     if not reasons:
-        reasons.append(Reason("NO_SIGNALS", "No strong risk signals detected", 0))
+        reasons.append(Reason("NO_SIGNALS", "No strong trust signals detected", 0))
 
     score = max(0, min(100, score))
     reasons = sorted(reasons, key=lambda r: abs(r.weight), reverse=True)[:5]
@@ -363,16 +378,16 @@ def label_from_score(score: int) -> str:
 def analyze_payload(
     payload: dict,
     stablecoins: Dict[str, dict],
-    flagged: set[str],
     dust_threshold: float = DEFAULT_DUST_THRESHOLD,
 ) -> AnalysisResult:
     address = payload.get("address") or ""
-    features = extract_features(payload, stablecoins, flagged, dust_threshold=dust_threshold)
-    score, reasons = score_features(features)
-    label = label_from_score(score)
+    features = extract_features(payload, stablecoins, dust_threshold=dust_threshold)
+    risk_score, reasons = score_features(features)
+    trust_score = 100 - risk_score
+    label = label_from_score(trust_score)
     return AnalysisResult(
         address=address,
-        score=score,
+        score=trust_score,
         label=label,
         reasons=reasons,
         features=features,

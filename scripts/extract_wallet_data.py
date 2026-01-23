@@ -440,6 +440,7 @@ def _fetch_first_transfer(endpoint: str, address: str, timeout: int) -> Optional
 def _count_transfers(
     endpoint: str,
     address: str,
+    from_block: str,
     to_block: str,
     timeout: int,
     max_count_hex: str,
@@ -454,7 +455,7 @@ def _count_transfers(
         page_count = 0
         while True:
             params = {
-                "fromBlock": "0x0",
+                "fromBlock": from_block,
                 "toBlock": to_block,
                 "category": categories,
                 "withMetadata": False,
@@ -482,6 +483,66 @@ def _count_transfers(
                 truncated = True
                 break
     return total, truncated
+
+
+def count_transfers_for_address(
+    endpoint: str,
+    address: str,
+    days: int,
+    timeout: int,
+    max_count: int,
+    max_pages: int,
+    include_all_time_count: bool,
+    all_time_max_pages: int,
+) -> dict:
+    now_ts = int(time.time())
+    target_ts = now_ts - days * 24 * 60 * 60
+    start_block = _find_block_by_timestamp(endpoint, target_ts, timeout)
+    end_block = _block_info(endpoint, _latest_block(endpoint, timeout), timeout)
+
+    window_count, window_truncated = _count_transfers(
+        endpoint,
+        address,
+        from_block=hex(start_block.number),
+        to_block=hex(end_block.number),
+        timeout=timeout,
+        max_count_hex=hex(max_count),
+        max_pages=max_pages,
+    )
+
+    all_time_count = None
+    all_time_truncated = None
+    if include_all_time_count:
+        all_time_count, all_time_truncated = _count_transfers(
+            endpoint,
+            address,
+            from_block="0x0",
+            to_block=hex(end_block.number),
+            timeout=timeout,
+            max_count_hex=hex(max_count),
+            max_pages=all_time_max_pages,
+        )
+
+    return {
+        "address": address,
+        "window_days": days,
+        "window": {
+            "from_block": hex(start_block.number),
+            "from_timestamp": start_block.timestamp,
+            "from_iso": _format_iso_timestamp(start_block.timestamp),
+            "to_block": hex(end_block.number),
+            "to_timestamp": end_block.timestamp,
+            "to_iso": _format_iso_timestamp(end_block.timestamp),
+        },
+        "counts": {
+            "window_transfers": window_count,
+        },
+        "window_transfers_truncated": window_truncated,
+        "all_time_transfers": all_time_count,
+        "all_time_transfers_truncated": all_time_truncated,
+        "fetched_at": now_ts,
+        "fetched_at_iso": _format_iso_timestamp(now_ts),
+    }
 
 
 def _fetch_token_balances(endpoint: str, address: str, timeout: int) -> dict:
@@ -728,6 +789,7 @@ def extract_for_address(
     max_count: int,
     include_all_time_count: bool,
     all_time_max_pages: int,
+    window_count_max_pages: int,
     token_cache_path: Path,
     max_total_transfers: int,
     fanout_levels: int,
@@ -755,11 +817,25 @@ def extract_for_address(
     transfers_from_block = hex(start_block.number)
     transfers_to_block = hex(end_block.number)
 
+    window_count, window_count_truncated = _count_transfers(
+        endpoint,
+        address,
+        from_block=transfers_from_block,
+        to_block=transfers_to_block,
+        timeout=timeout,
+        max_count_hex=hex(max_count),
+        max_pages=window_count_max_pages,
+    )
+    _log(
+        f"[extract] window_transfers={window_count} truncated={window_count_truncated}"
+    )
+
     if include_all_time_count:
         first_transfer = _fetch_first_transfer(endpoint, address, timeout)
         all_time_count, all_time_truncated = _count_transfers(
             endpoint,
             address,
+            from_block="0x0",
             to_block=hex(end_block.number),
             timeout=timeout,
             max_count_hex=hex(max_count),
@@ -769,6 +845,12 @@ def extract_for_address(
         if all_time_count is not None and all_time_count <= 100:
             transfers_scope = "all_time"
             transfers_from_block = "0x0"
+
+    transfers_more_available = False
+    if window_count_truncated:
+        transfers_more_available = True
+    elif window_count is not None:
+        transfers_more_available = window_count > max_total_transfers
 
     transfers = _fetch_transfers(
         endpoint,
@@ -781,7 +863,7 @@ def extract_for_address(
     )
     transfers = _sort_transfers_desc(transfers)
     _log(
-        f"[extract] transfers={len(transfers)} truncated={len(transfers) >= max_total_transfers}"
+        f"[extract] transfers={len(transfers)} truncated={transfers_more_available}"
     )
     token_balances = _fetch_token_balances(endpoint, address, timeout)
     _log(f"[extract] token_balances={len(token_balances.get('tokenBalances') or [])}")
@@ -829,9 +911,12 @@ def extract_for_address(
         },
         "counts": {
             "transfers": len(transfers),
+            "window_transfers_total": window_count,
             "token_balances": len(token_balances.get("tokenBalances") or []),
         },
-        "transfers_truncated": len(transfers) >= max_total_transfers,
+        "transfers_truncated": transfers_more_available,
+        "transfers_more_available": transfers_more_available,
+        "window_transfers_truncated": window_count_truncated,
         "transfers_skipped": transfers_skipped,
         "transfers_skip_reason": transfers_skip_reason,
         "transfers_scope": transfers_scope,
@@ -923,8 +1008,14 @@ def main() -> None:
     parser.add_argument(
         "--max-total-transfers",
         type=int,
-        default=1000,
+        default=250,
         help="Max total transfers to fetch per address before stopping.",
+    )
+    parser.add_argument(
+        "--count-max-pages",
+        type=int,
+        default=50,
+        help="Max pages per direction when counting window transfers.",
     )
     parser.add_argument(
         "--timeout",
@@ -1031,6 +1122,7 @@ def main() -> None:
                 max_count=args.max_count,
                 include_all_time_count=args.include_all_time_count,
                 all_time_max_pages=args.all_time_max_pages,
+                window_count_max_pages=args.count_max_pages,
                 token_cache_path=Path(args.token_cache_path),
                 max_total_transfers=args.max_total_transfers,
                 fanout_levels=args.fanout_levels,

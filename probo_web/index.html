@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Probo Demo | Trust Signals</title>
+    <meta
+      name="description"
+      content="Probo helps communities build trust in each other without banks, IDs, or middlemen."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg">
+      <div class="orb orb-one" aria-hidden="true"></div>
+      <div class="orb orb-two" aria-hidden="true"></div>
+      <div class="grid" aria-hidden="true"></div>
+    </div>
+
+    <main class="page">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Probo Demo</p>
+          <h1>Trust signals for peer-to-peer economies.</h1>
+          <p class="lead">
+            Probo helps communities build trust in each other without banks, IDs, or middlemen.
+            It summarizes on-chain behavior so people can decide for themselves.
+          </p>
+          <div class="pill-row">
+            <span class="pill">Behavior only</span>
+            <span class="pill">No identity checks</span>
+            <span class="pill">Community first</span>
+          </div>
+        </div>
+        <div class="hero-card">
+          <h2>Check an address</h2>
+          <p class="muted">Paste an address or pick a sample to see trust signals.</p>
+          <div class="input-row">
+            <span class="trust-dot" id="trustDot" aria-hidden="true"></span>
+            <input
+              id="addressInput"
+              type="text"
+              placeholder="0x..."
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+          <div class="explain-row">
+            <button id="explainButton" class="ghost" type="button">
+              <span class="btn-label">Explain</span>
+              <span class="btn-spinner" id="explainSpinner" aria-hidden="true"></span>
+            </button>
+            <div class="explain-text hidden" id="explainText"></div>
+          </div>
+          <div class="examples">
+            <p class="muted">Examples</p>
+            <div id="exampleList" class="chips"></div>
+          </div>
+          <div class="status" id="status">
+            <span class="spinner" id="statusSpinner" aria-hidden="true"></span>
+            <span id="statusText"></span>
+          </div>
+          <div class="actions">
+            <button id="toggleDetails" class="ghost" type="button">Show details</button>
+            <a class="link" href="lens.html">Open Probo Lens</a>
+          </div>
+        </div>
+      </header>
+
+      <section class="result hidden" id="result">
+        <div class="result-header">
+          <div>
+            <p class="eyebrow">Behavior summary</p>
+            <h3 id="resultAddress">No address loaded</h3>
+          </div>
+          <div class="score-chip" id="scoreChip">
+            <span class="score-label">Trust signal</span>
+            <span class="score-value">--</span>
+          </div>
+        </div>
+
+        <div class="result-grid">
+          <div class="panel">
+            <h4>Trust band</h4>
+            <p id="trustBand" class="band">--</p>
+            <p class="muted" id="scoreHint">Higher suggests more trust.</p>
+          </div>
+          <div class="panel">
+            <h4>Behavior reasons</h4>
+            <ul id="reasonList" class="list"></ul>
+          </div>
+          <div class="panel">
+            <h4>Pattern signals</h4>
+            <ul id="patternList" class="list"></ul>
+          </div>
+          <div class="panel">
+            <h4>Key stats</h4>
+            <ul id="statList" class="list"></ul>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Built for community trust, not surveillance.</span>
+      <span>Probo demo</span>
+    </footer>
+
+    <script>
+      window.PROBO_API_BASE = "https://api.probo.co.za";
+    </script>
+    <script src="app.js"></script>
+  </body>
+</html>

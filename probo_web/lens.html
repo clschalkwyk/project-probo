@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Probo Lens | Address Viewer</title>
+    <meta
+      name="description"
+      content="Probo Lens compares trust signals with transaction activity for a given address."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="lens.css" />
+  </head>
+  <body>
+    <div class="bg">
+      <div class="orb orb-one" aria-hidden="true"></div>
+      <div class="orb orb-two" aria-hidden="true"></div>
+      <div class="grid" aria-hidden="true"></div>
+    </div>
+
+    <main class="page lens">
+      <header class="lens-hero">
+        <div>
+          <p class="eyebrow">Probo Lens</p>
+          <h1>Trust signals + transaction detail.</h1>
+          <p class="lead">
+            Pull both the behavior analysis and recent transfer activity for a single address.
+            Use this to validate risk signals before you share a link or approve a transfer.
+          </p>
+          <a class="link" href="index.html">Back to demo</a>
+        </div>
+        <div class="hero-card">
+          <h2>Inspect an address</h2>
+          <p class="muted">We fetch cached data when available and refresh if it is older than 14 days.</p>
+          <div class="input-row">
+            <input
+              id="lensAddress"
+              type="text"
+              placeholder="0x..."
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="lensCheck">Run lens</button>
+          </div>
+          <div class="status" id="lensStatus"></div>
+        </div>
+      </header>
+
+      <section class="lens-panels">
+        <article class="panel-block">
+          <div class="panel-header">
+            <h3>Analysis summary</h3>
+            <span
+              class="hint"
+              title="Scores are derived from behavioral signals only. Higher means more trusted."
+              >?</span
+            >
+          </div>
+          <div class="analysis-summary" id="analysisSummary">Run the lens to populate analysis.</div>
+          <ul id="analysisList" class="list"></ul>
+        </article>
+        <article class="panel-block">
+          <div class="panel-header">
+            <h3>Transactions snapshot</h3>
+            <span
+              class="hint"
+              title="Shows the most recent transfers in the 30-day window. Shortened for quick review."
+              >?</span
+            >
+          </div>
+          <div class="analysis-summary" id="txSummary">Run the lens to load transfer details.</div>
+          <ul id="txList" class="list monospace"></ul>
+        </article>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Probo Lens is a fast signal layer, not a verdict.</span>
+      <span>Probo demo</span>
+    </footer>
+
+    <script>
+      window.PROBO_API_BASE = "";
+    </script>
+    <script src="lens.js"></script>
+  </body>
+</html>

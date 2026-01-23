@@ -257,7 +257,7 @@ def detect_relay(features: Dict[str, object]) -> DetectorResult:
     return DetectorResult(score=score, level=_level(score), reasons=reasons)
 
 
-def summarize_infra(payload: dict, risk_memory: Optional[dict] = None) -> Dict[str, object]:
+def summarize_infra(payload: dict) -> Dict[str, object]:
     features = extract_features(payload)
     seeder = detect_seeder(features)
     trap = detect_trap(features)
@@ -278,16 +278,6 @@ def summarize_infra(payload: dict, risk_memory: Optional[dict] = None) -> Dict[s
     for det in detectors.values():
         if det.level in {"HIGH", "MEDIUM"}:
             explain.extend(det.reasons[:2])
-
-    risk_memory = risk_memory or {}
-    if risk_memory.get("known_phishing"):
-        if features["tx_total"] > 0:
-            level = "HIGH"
-            explain.append("Known phishing label with recent activity")
-        else:
-            if level == "LOW":
-                level = "MEDIUM"
-            explain.append("Known phishing label (historical)")
 
     return {
         "probobility": level,
