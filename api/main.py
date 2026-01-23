@@ -38,8 +38,8 @@ _LOGGER = logging.getLogger("probo.api")
 _LOGGER.setLevel(logging.INFO)
 _OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 _OPENROUTER_MODELS = [
-    "x-ai/grok-4.1-fast",
     "google/gemini-3-flash-preview",
+    "x-ai/grok-4.1-fast",
     "google/gemini-2.5-flash",
 ]
 
@@ -47,40 +47,79 @@ _EXPLAIN_SYSTEM_PROMPT = """You are Probo, a helper that explains wallet behavio
 including spaza shop owners, informal traders, and community members.
 
 Your job is NOT to judge, accuse, or give advice.
-Your job is to explain what was seen on the blockchain in simple, clear language.
+Your job is to explain observed money movement in simple, human language.
 
-Rules you must always follow:
-- Use plain English only. No technical or crypto words.
+GLOBAL RULES (must always follow):
+- Use plain, everyday language in each requested language.
+- Do NOT translate word-for-word or copy sentence structure from English.
+- Rewrite naturally as a native speaker would speak.
 - Speak as if explaining to someone with little formal education.
 - Be calm, respectful, and non-judgmental.
-- Never say “scam”, “fraud”, or “illegal”.
+- Never say “scam”, “fraud”, “illegal”, or imply wrongdoing.
 - Never tell the user what to do.
-- Never give certainty. Only describe patterns.
+- Never give certainty. Only describe what is seen.
 - Maximum 3 short sentences.
 - Do not invent reasons. Only explain the signals provided.
-- Explain WHAT happened and WHY that matters in everyday terms.
+- Describe what was observed and what it usually suggests in everyday life.
 
-Tone:
-- Neutral
-- Helpful
-- Community-focused
-- No fear, no hype, no warnings
+STRICTLY AVOID:
+- Technical, financial, or crypto terms
+- Abstract phrases like “focused movement”, “behavioral pattern”
+- Formal or academic language
+- Moral framing or warnings
 
-Framing:
-- Use phrases like:
-  - “This wallet is new…”
-  - “Money moves very quickly…”
-  - “This pattern is sometimes used when…”
-- Avoid words like:
-  - algorithm
-  - blockchain
-  - transaction graph
-  - acceleration
-  - probability
-  - risk score
+LANGUAGE STYLE GUIDELINES:
 
-Your explanation should help someone decide for themselves,
-without feeling scared, judged, or confused."""
+English (en):
+- Simple, conversational, natural.
+- Prefer concrete phrases like:
+  - “money stays in a small circle”
+  - “mostly the same few people”
+  - “does not move around much”
+
+French (fr):
+- Everyday spoken French, not academic.
+- Prefer:
+  - “l’argent reste surtout entre les mêmes personnes”
+  - “les échanges restent limités”
+- Avoid literal translations from English.
+
+Portuguese (pt):
+- Natural, neutral Portuguese.
+- Avoid literal English metaphors.
+- Prefer:
+  - “o dinheiro fica quase sempre entre as mesmas pessoas”
+  - “os movimentos são limitados”
+
+isiZulu (zu):
+- Use simple, spoken isiZulu as used in daily conversation.
+- Keep sentences short and direct.
+- Prefer concrete wording over abstract concepts.
+- Use everyday terms like:
+  - “imali” (money)
+  - “abantu abafanayo” (the same people)
+  - “iqembu elincane” (a small group)
+- Avoid direct translations of English sentence structure.
+- Avoid complex grammar or formal isiZulu.
+- Do NOT invent new metaphors.
+- It is acceptable to repeat simple words for clarity.
+
+Input:
+You will receive:
+- Risk level
+- A short list of observed signals (plain English)
+
+Output:
+Return explanations in:
+- English (en)
+- French (fr)
+- Portuguese (pt)
+- isiZulu (zu)
+
+Format:
+Return a JSON object with keys: en, fr, pt, zu
+Each value is a short paragraph (1–3 sentences).
+"""
 
 
 class AnalyzeRequest(BaseModel):
@@ -229,8 +268,16 @@ class ExtractCountRequest(BaseModel):
 
 
 class ExplainRequest(BaseModel):
+    address: Optional[str] = Field(
+        default=None,
+        description="Address tied to the explanation (enables caching).",
+    )
     reasons: list[str] = Field(default_factory=list)
     patterns: list[str] = Field(default_factory=list)
+    use_cache: bool = Field(
+        default=True,
+        description="Use cached explanation when available.",
+    )
 
 
 class ExtractionRequest(BaseModel):
@@ -422,7 +469,47 @@ def _normalize_ddb_value(value: Any) -> Any:
     return value
 
 
-def _openrouter_explain(reasons: list[str], patterns: list[str]) -> str:
+def _strip_json_fence(text: str) -> str:
+    trimmed = text.strip()
+    if trimmed.startswith("```"):
+        lines = trimmed.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+    return trimmed
+
+
+def _try_parse_json(text: str) -> Optional[Any]:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _coerce_explain_summary(summary: Any) -> dict[str, str]:
+    if isinstance(summary, dict):
+        if summary.keys() == {"summary"}:
+            return _coerce_explain_summary(summary.get("summary"))
+        cleaned = {
+            key: value.strip()
+            for key, value in summary.items()
+            if isinstance(value, str) and value.strip()
+        }
+        if cleaned:
+            return cleaned
+    if isinstance(summary, str):
+        parsed = _try_parse_json(_strip_json_fence(summary))
+        if parsed is not None:
+            return _coerce_explain_summary(parsed)
+        return {"en": summary.strip()}
+    if summary is None:
+        return {"en": ""}
+    return {"en": str(summary)}
+
+
+def _openrouter_explain(reasons: list[str], patterns: list[str]) -> dict[str, str]:
     if not _OPENROUTER_KEY:
         raise HTTPException(status_code=500, detail="Missing OPENROUTER_API_KEY.")
     payload = {
@@ -452,7 +539,7 @@ def _openrouter_explain(reasons: list[str], patterns: list[str]) -> str:
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=15,
+                timeout=45,
             )
             if response.status_code >= 400:
                 _LOGGER.warning(
@@ -471,7 +558,7 @@ def _openrouter_explain(reasons: list[str], patterns: list[str]) -> str:
                 .strip()
             )
             if content:
-                return content
+                return _coerce_explain_summary(content)
             last_error = "Empty response content"
         except Exception as exc:
             last_error = str(exc)
@@ -562,6 +649,34 @@ def _load_cached_extraction(address: str) -> Optional[dict]:
     if isinstance(payload, dict):
         return _decompress_payload(payload)
     return None
+
+
+def _store_explain_result(address: str, summary: str) -> None:
+    if not _DDB_TABLE:
+        return
+    if not address:
+        return
+    now_ts = int(time.time())
+    ttl = now_ts + _DDB_TTL_DAYS * 24 * 60 * 60
+    item = {
+        "address": address.lower(),
+        "record_type": "explain",
+        "result": {"summary": summary},
+        "updated_at": now_ts,
+        "ttl": ttl,
+    }
+    _ddb_put_item(item)
+
+
+def _load_cached_explain(address: str) -> Optional[dict]:
+    if not _DDB_TABLE:
+        return None
+    item = _ddb_get_item(address, "explain")
+    if not item:
+        return None
+    if not _is_fresh(item.get("updated_at")):
+        return None
+    return item.get("result")
 
 
 app = FastAPI(
@@ -687,7 +802,17 @@ def analyze(req: AnalyzeRequest) -> dict:
 def explain(req: ExplainRequest) -> dict:
     reasons = [item for item in req.reasons if item]
     patterns = [item for item in req.patterns if item]
+    address = (req.address or "").lower()
+    if req.use_cache and address:
+        cached = _load_cached_explain(address)
+        if cached:
+            _LOGGER.info("explain cache_hit=explain address=%s", address)
+            return cached
     summary = _openrouter_explain(reasons, patterns)
+    try:
+        _store_explain_result(address, summary)
+    except Exception:
+        _LOGGER.exception("Failed to store explain result in DynamoDB")
     return {"summary": summary}
 
 

@@ -40,7 +40,12 @@
         </div>
         <div class="hero-card">
           <h2>Check an address</h2>
+          <p class="section-label">Probo Basic</p>
           <p class="muted">Paste an address or pick a sample to see trust signals.</p>
+          <div class="try-hints">
+            <span class="muted">Try:</span>
+            <div id="exampleList" class="try-list"></div>
+          </div>
           <div class="input-row">
             <span class="trust-dot" id="trustDot" aria-hidden="true"></span>
             <input
@@ -51,60 +56,54 @@
               spellcheck="false"
             />
           </div>
-          <div class="explain-row">
-            <button id="explainButton" class="ghost" type="button">
-              <span class="btn-label">Explain</span>
-              <span class="btn-spinner" id="explainSpinner" aria-hidden="true"></span>
+          <div class="run-row">
+            <button id="runButton" class="primary" type="button">
+              <span class="btn-label">Run Probo</span>
+              <span class="btn-spinner" id="runSpinner" aria-hidden="true"></span>
             </button>
-            <div class="explain-text hidden" id="explainText"></div>
-          </div>
-          <div class="examples">
-            <p class="muted">Examples</p>
-            <div id="exampleList" class="chips"></div>
           </div>
           <div class="status" id="status">
             <span class="spinner" id="statusSpinner" aria-hidden="true"></span>
             <span id="statusText"></span>
           </div>
-          <div class="actions">
-            <button id="toggleDetails" class="ghost" type="button">Show details</button>
-            <a class="link" href="lens.html">Open Probo Lens</a>
+          <div class="result-inline hidden" id="resultInline">
+            <p class="section-label">Probo Translate</p>
+            <div class="result-metrics">
+              <div class="metric">
+                <span class="metric-label">Trust level</span>
+                <span class="metric-value" id="trustBand">--</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Trust score</span>
+                <span class="metric-value" id="trustScore">--</span>
+              </div>
+            </div>
+            <p class="result-summary" id="resultSummary"></p>
+            <div class="result-actions" id="resultActions">
+              <button id="explainButton" class="ghost" type="button" aria-expanded="false">
+                <span class="btn-label">Tell me the story</span>
+                <span class="btn-spinner" id="explainSpinner" aria-hidden="true"></span>
+              </button>
+              <label class="cache-toggle">
+                <input id="explainCacheToggle" type="checkbox" checked />
+                Use cached
+              </label>
+            </div>
+            <div class="explain-text hidden" id="explainText"></div>
+            <div class="explain-langs hidden" id="explainLangs" aria-label="Explanation language">
+              <button class="lang-pill" type="button" data-lang="en">🇬🇧 EN</button>
+              <button class="lang-pill" type="button" data-lang="fr">🇫🇷 FR</button>
+              <button class="lang-pill" type="button" data-lang="pt">🇵🇹 PT</button>
+              <button class="lang-pill" type="button" data-lang="zu">🇿🇦 ZU</button>
+            </div>
+            <div class="section-divider" aria-hidden="true"></div>
+            <p class="section-label lens-label">Probo Lens <span>(Advanced)</span></p>
+            <a class="link lens-link hidden" id="lensLink" href="#">
+              Open Probo Lens <span aria-hidden="true">→</span>
+            </a>
           </div>
         </div>
       </header>
-
-      <section class="result hidden" id="result">
-        <div class="result-header">
-          <div>
-            <p class="eyebrow">Behavior summary</p>
-            <h3 id="resultAddress">No address loaded</h3>
-          </div>
-          <div class="score-chip" id="scoreChip">
-            <span class="score-label">Trust signal</span>
-            <span class="score-value">--</span>
-          </div>
-        </div>
-
-        <div class="result-grid">
-          <div class="panel">
-            <h4>Trust band</h4>
-            <p id="trustBand" class="band">--</p>
-            <p class="muted" id="scoreHint">Higher suggests more trust.</p>
-          </div>
-          <div class="panel">
-            <h4>Behavior reasons</h4>
-            <ul id="reasonList" class="list"></ul>
-          </div>
-          <div class="panel">
-            <h4>Pattern signals</h4>
-            <ul id="patternList" class="list"></ul>
-          </div>
-          <div class="panel">
-            <h4>Key stats</h4>
-            <ul id="statList" class="list"></ul>
-          </div>
-        </div>
-      </section>
     </main>
 
     <footer class="footer">

@@ -22,29 +22,27 @@ const exampleList = document.getElementById("exampleList");
 const statusEl = document.getElementById("status");
 const statusText = document.getElementById("statusText");
 const statusSpinner = document.getElementById("statusSpinner");
-const resultEl = document.getElementById("result");
-const toggleDetails = document.getElementById("toggleDetails");
+const runButton = document.getElementById("runButton");
+const runSpinner = document.getElementById("runSpinner");
 const explainButton = document.getElementById("explainButton");
 const explainText = document.getElementById("explainText");
 const explainSpinner = document.getElementById("explainSpinner");
-const resultAddress = document.getElementById("resultAddress");
-const scoreChip = document.getElementById("scoreChip");
+const explainCacheToggle = document.getElementById("explainCacheToggle");
+const explainLangs = document.getElementById("explainLangs");
+const explainLangButtons = explainLangs
+  ? Array.from(explainLangs.querySelectorAll("button[data-lang]"))
+  : [];
 const trustBand = document.getElementById("trustBand");
-const reasonList = document.getElementById("reasonList");
-const patternList = document.getElementById("patternList");
-const statList = document.getElementById("statList");
+const trustScore = document.getElementById("trustScore");
+const resultInline = document.getElementById("resultInline");
+const resultSummary = document.getElementById("resultSummary");
+const resultActions = document.getElementById("resultActions");
+const lensLink = document.getElementById("lensLink");
 
 let lastAnalysis = null;
-
-const formatNumber = (value, digits = 0) => {
-  if (value === null || value === undefined) return "n/a";
-  const num = Number(value);
-  if (Number.isNaN(num)) return "n/a";
-  return num.toLocaleString(undefined, {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: digits,
-  });
-};
+let lastExplainSummary = null;
+let explainOpen = false;
+let selectedExplainLang = null;
 
 const setStatus = (text, tone = "") => {
   statusText.textContent = text;
@@ -52,19 +50,48 @@ const setStatus = (text, tone = "") => {
   statusSpinner.classList.toggle("visible", tone === "loading");
 };
 
-const setDetailsReady = (ready) => {
-  toggleDetails.dataset.ready = ready ? "true" : "false";
+const setResultReady = (ready) => {
+  if (resultInline) {
+    resultInline.classList.toggle("hidden", !ready);
+  }
+  if (resultActions) {
+    resultActions.classList.toggle("hidden", !ready);
+  }
+  if (lensLink) {
+    lensLink.classList.toggle("hidden", !ready);
+  }
+};
+
+const setRunLoading = (loading) => {
+  if (runSpinner) {
+    runSpinner.classList.toggle("visible", loading);
+  }
+  runButton.classList.toggle("loading", loading);
+  runButton.disabled = loading;
+  addressInput.disabled = loading;
 };
 
 const setExplainLoading = (loading) => {
   explainSpinner.classList.toggle("visible", loading);
   explainButton.classList.toggle("loading", loading);
   explainButton.disabled = loading;
+  if (explainCacheToggle) {
+    explainCacheToggle.disabled = loading;
+  }
 };
 
-const setDetailsOpen = (open) => {
-  resultEl.classList.toggle("hidden", !open);
-  toggleDetails.textContent = open ? "Hide details" : "Show details";
+const setExplainOpen = (open) => {
+  explainOpen = open;
+  explainText.classList.toggle("hidden", !open);
+  explainButton.setAttribute("aria-expanded", open ? "true" : "false");
+  const label = explainButton.querySelector(".btn-label");
+  if (label) {
+    label.textContent = open ? "Hide story" : "Tell me the story";
+  }
+  if (!open && explainLangs) {
+    explainLangs.classList.add("hidden");
+  }
+  updateExplainLanguages();
 };
 
 const setTrustDot = (label) => {
@@ -72,24 +99,72 @@ const setTrustDot = (label) => {
   trustDot.dataset.tone = tone;
 };
 
-const clearList = (node) => {
-  while (node.firstChild) node.removeChild(node.firstChild);
+const pickSummaryText = (summary, preferred) => {
+  if (!summary) return "";
+  if (typeof summary === "string") return summary;
+  if (typeof summary === "object") {
+    const order = [preferred, "en", "fr", "pt", "zu"];
+    for (const key of order) {
+      const value = summary[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    const fallback = Object.values(summary).find(
+      (value) => typeof value === "string" && value.trim(),
+    );
+    return fallback ? fallback.trim() : "";
+  }
+  return String(summary);
 };
 
-const addListItem = (node, text) => {
-  const item = document.createElement("li");
-  item.textContent = text;
-  node.appendChild(item);
+const getPreferredLanguage = () =>
+  (navigator.language || "en").slice(0, 2).toLowerCase();
+
+const getAvailableExplainLanguages = () => {
+  if (!lastExplainSummary || typeof lastExplainSummary !== "object") {
+    return [];
+  }
+  return ["en", "fr", "pt", "zu"].filter((lang) => {
+    const value = lastExplainSummary[lang];
+    return typeof value === "string" && value.trim();
+  });
+};
+
+const updateExplainText = () => {
+  const preferred = selectedExplainLang || getPreferredLanguage();
+  const summaryText = pickSummaryText(lastExplainSummary, preferred);
+  explainText.textContent = summaryText || humanizeSignals(lastAnalysis);
+};
+
+const updateExplainLanguages = () => {
+  if (!explainLangs) return;
+  const available = getAvailableExplainLanguages();
+  if (!available.length || !explainOpen) {
+    explainLangs.classList.add("hidden");
+    return;
+  }
+  if (!selectedExplainLang || !available.includes(selectedExplainLang)) {
+    const preferred = getPreferredLanguage();
+    selectedExplainLang = available.includes(preferred) ? preferred : available[0];
+  }
+  explainLangs.classList.remove("hidden");
+  explainLangButtons.forEach((button) => {
+    const lang = button.dataset.lang;
+    const enabled = available.includes(lang);
+    button.disabled = !enabled;
+    button.setAttribute("aria-pressed", lang === selectedExplainLang ? "true" : "false");
+  });
 };
 
 const getBandTone = (label) => {
   switch ((label || "").toLowerCase()) {
     case "high":
-      return "High trust";
+      return "High";
     case "medium":
-      return "Moderate trust";
+      return "Medium";
     case "low":
-      return "Low trust";
+      return "Low";
     default:
       return "Unknown";
   }
@@ -97,40 +172,15 @@ const getBandTone = (label) => {
 
 const updateResult = (data) => {
   lastAnalysis = data;
-  resultAddress.textContent = data.address || "Unknown address";
-  const scoreValue = scoreChip.querySelector(".score-value");
-  scoreValue.textContent = data.score ?? "--";
+  trustScore.textContent = data.score ?? "--";
   trustBand.textContent = getBandTone(data.label);
   setTrustDot(data.label);
-
-  clearList(reasonList);
-  if (data.reasons && data.reasons.length) {
-    data.reasons.forEach((reason) => {
-      addListItem(reasonList, `${reason.code || "Signal"}: ${reason.detail || ""}`.trim());
-    });
-  } else {
-    addListItem(reasonList, "No reasons returned.");
+  if (lensLink && data.address) {
+    const encoded = encodeURIComponent(data.address);
+    lensLink.href = `probo_lens/?q=${encoded}`;
   }
-
-  clearList(patternList);
-  if (data.infra && data.infra.explain && data.infra.explain.length) {
-    data.infra.explain.forEach((item) => addListItem(patternList, item));
-  } else {
-    addListItem(patternList, "No pattern highlights in this window.");
-  }
-
-  clearList(statList);
-  const features = data.features || {};
-  addListItem(statList, `Transfers (window): ${formatNumber(features.tx_count_30)}`);
-  addListItem(statList, `Active days (window): ${formatNumber(features.active_days_30)}`);
-  addListItem(statList, `Unique counterparties: ${formatNumber(features.unique_counterparties_30)}`);
-  addListItem(statList, `Wallet age (days): ${formatNumber(features.wallet_age_days)}`);
-  addListItem(statList, `Transfer cap hit: ${features.transfers_truncated ? "yes" : "no"}`);
-  if (features.tx_acceleration_flag !== undefined) {
-    addListItem(
-      statList,
-      `Acceleration flag: ${features.tx_acceleration_flag ? "yes" : "no"}`
-    );
+  if (resultSummary) {
+    resultSummary.textContent = humanizeSignals(data);
   }
 };
 
@@ -151,19 +201,26 @@ const humanizeSignals = (data) => {
 const toggleExplain = async () => {
   if (!lastAnalysis) {
     explainText.textContent = humanizeSignals(lastAnalysis);
-    explainText.classList.toggle("hidden", false);
     return;
   }
   const reasons = (lastAnalysis.reasons || [])
     .map((item) => item.detail || item.code)
     .filter(Boolean);
   const patterns = (lastAnalysis.infra && lastAnalysis.infra.explain) || [];
+  const address = lastAnalysis.address || "";
+  const useCache = explainCacheToggle ? explainCacheToggle.checked : true;
+  setStatus("Translating signals...", "loading");
   setExplainLoading(true);
   try {
     const response = await fetch(`${API_BASE}/explain`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reasons, patterns }),
+      body: JSON.stringify({
+        address,
+        reasons,
+        patterns,
+        use_cache: useCache,
+      }),
     });
     const rawText = await response.text();
     let data = null;
@@ -181,13 +238,16 @@ const toggleExplain = async () => {
         "Explain failed";
       throw new Error(message);
     }
-    explainText.textContent = data.summary || humanizeSignals(lastAnalysis);
-    explainText.classList.toggle("hidden", false);
+    lastExplainSummary = data.summary;
+    updateExplainLanguages();
+    updateExplainText();
   } catch (error) {
+    lastExplainSummary = null;
+    updateExplainLanguages();
     explainText.textContent = humanizeSignals(lastAnalysis);
-    explainText.classList.toggle("hidden", false);
   } finally {
     setExplainLoading(false);
+    setStatus("");
   }
 };
 
@@ -214,9 +274,18 @@ const callApi = async (address) => {
     return;
   }
   setStatus("Checking address...", "loading");
-  setDetailsReady(false);
+  setResultReady(false);
+  setRunLoading(true);
   setTrustDot("unknown");
-  explainText.classList.add("hidden");
+  setExplainOpen(false);
+  explainText.textContent = "";
+  lastExplainSummary = null;
+  selectedExplainLang = null;
+  trustBand.textContent = "--";
+  trustScore.textContent = "--";
+  if (resultSummary) {
+    resultSummary.textContent = "";
+  }
   try {
     const response = await fetch(`${API_BASE}/analyze`, {
       method: "POST",
@@ -246,21 +315,35 @@ const callApi = async (address) => {
       throw new Error(message);
     }
     updateResult(data);
-    setDetailsReady(true);
-    setStatus("Ready.");
+    setResultReady(true);
+    setStatus("");
   } catch (error) {
     setTrustDot("unknown");
     setStatus(`Error: ${error.message}`, "error");
+  } finally {
+    setRunLoading(false);
   }
 };
+
+if (explainLangButtons.length) {
+  explainLangButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const lang = button.dataset.lang;
+      if (!lang) return;
+      selectedExplainLang = lang;
+      updateExplainLanguages();
+      updateExplainText();
+    });
+  });
+}
 
 EXAMPLES.forEach((example) => {
   const address = example.address;
   const chip = document.createElement("button");
   const label = (example.label || "neutral").toLowerCase();
-  chip.className = `chip chip-${label}`;
+  chip.className = `try-hint try-${label}`;
   chip.type = "button";
-  chip.textContent = `${example.label}: ${address.slice(0, 6)}...${address.slice(-4)}`;
+  chip.textContent = `${example.label} ${address.slice(0, 6)}...${address.slice(-4)}`;
   chip.addEventListener("click", () => {
     addressInput.value = address;
     callApi(address);
@@ -281,22 +364,38 @@ addressInput.addEventListener("keydown", (event) => {
 
 addressInput.addEventListener("input", () => {
   setTrustDot("unknown");
-  setDetailsReady(false);
+  setResultReady(false);
   lastAnalysis = null;
-  explainText.classList.add("hidden");
+  if (resultSummary) {
+    resultSummary.textContent = "";
+  }
+  trustBand.textContent = "--";
+  trustScore.textContent = "--";
+  explainText.textContent = "";
+  setExplainOpen(false);
 });
 
-toggleDetails.addEventListener("click", () => {
-  setDetailsOpen(resultEl.classList.contains("hidden"));
+runButton.addEventListener("click", () => {
+  const value = addressInput.value.trim();
+  if (!value) {
+    setStatus("Paste an address to check.", "error");
+    return;
+  }
+  callApi(value);
 });
 
-explainButton.addEventListener("click", () => {
-  toggleExplain();
+explainButton.addEventListener("click", async () => {
+  if (explainOpen) {
+    setExplainOpen(false);
+    return;
+  }
+  await toggleExplain();
+  setExplainOpen(true);
 });
 
-setStatus("Ready.");
-setDetailsOpen(false);
-setDetailsReady(false);
+setStatus("");
+setResultReady(false);
 setTrustDot("unknown");
-explainText.classList.add("hidden");
+setExplainOpen(false);
 setExplainLoading(false);
+setRunLoading(false);

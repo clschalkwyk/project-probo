@@ -9,6 +9,9 @@ import {
   forceY,
 } from "d3-force";
 
+const API_BASE = "https://api.probo.co.za";
+const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+
 const DB_NAME = "probo-viewer";
 const DB_VERSION = 1;
 const STORE_NAME = "jsonfiles";
@@ -1033,6 +1036,7 @@ export default function App() {
   const [activeId, setActiveId] = useState(null);
   const [payload, setPayload] = useState(null);
   const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const [limit, setLimit] = useState(150);
@@ -1061,6 +1065,71 @@ export default function App() {
   useEffect(() => {
     refreshFiles().catch((err) => setError(err.message));
   }, [refreshFiles]);
+
+  const loadFromAddress = useCallback(
+    async (address) => {
+      const trimmed = String(address || "").trim();
+      if (!trimmed) return;
+      if (!ADDRESS_REGEX.test(trimmed)) {
+        setError("Enter a valid 0x address to load details.");
+        return;
+      }
+      if (!API_BASE) {
+        setError("Missing API base. Set VITE_PROBO_API_BASE or window.PROBO_API_BASE.");
+        return;
+      }
+      setIsLoading(true);
+      setError("");
+      try {
+        const extractionResponse = await fetch(`${API_BASE}/extraction`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            address: trimmed,
+            run_extract: true,
+            save_extraction: false,
+          }),
+        });
+        const extractionData = await extractionResponse.json();
+        if (!extractionResponse.ok) {
+          throw new Error(
+            extractionData?.detail || extractionData?.message || "Extraction failed."
+          );
+        }
+        const payloadData = extractionData.payload || extractionData;
+        const analyzeResponse = await fetch(`${API_BASE}/analyze`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            payload: payloadData,
+            include_infra: true,
+          }),
+        });
+        const analyzeData = await analyzeResponse.json();
+        if (!analyzeResponse.ok) {
+          throw new Error(
+            analyzeData?.detail || analyzeData?.message || "Analyze failed."
+          );
+        }
+        const merged = { ...payloadData, ...analyzeData };
+        setActiveId(null);
+        setPayload(merged);
+      } catch (err) {
+        setError(err.message || "Failed to load address.");
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const query = params.get("q");
+    if (query) {
+      loadFromAddress(query);
+    }
+  }, [loadFromAddress]);
 
   const handleFile = useCallback(
     async (file) => {
@@ -1206,6 +1275,7 @@ export default function App() {
             />
             <span>Stored in IndexedDB</span>
           </div>
+          {isLoading ? <div className="notice">Loading address...</div> : null}
           {error ? <div className="error">{error}</div> : null}
         </div>
       </header>
