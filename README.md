@@ -1,21 +1,60 @@
 # Probo
 
-Explainable Ethereum address risk analysis. Probo extracts transfer activity from Ethereum Mainnet, builds a connected graph around a seed address, and produces a human-readable risk rating with reasons.
+**Probo helps communities build trust in each other — without banks, IDs, or middlemen.**
 
-## Why
+Trust is earned through actions, not documents. Probo surfaces trust signals from on-chain behavior so people in peer-to-peer economies can make their own calls.
 
-Wallets are hard to evaluate at a glance. Probo focuses on explainable scoring: each rating is backed by clear, measurable signals so you can understand why an address looks normal, unusual, or risky.
+African communities have always relied on trust networks — Probo makes those signals portable in a digital world.
 
-## What’s included
+## Why trust signals
 
-- Extraction pipeline for transfers, token balances, and fan-out graph expansion.
-- Analysis engine that assigns a Low/Medium/High rating with reasons.
-- Optional infra behavior detection (seeder/trap/relay-style activity).
-- Local caches for token metadata and curated intelligence lists.
-- Viewer app to explore the extracted data visually.
+Informal economies are real economies. When there is no contract, no chargeback, and no institution to lean on, behavior is the signal. Probo summarizes patterns from payment history so trust can travel without identity checks.
+
+## What it does
+
+- Extracts transfers, token balances, and fan-out context for an address.
+- Summarizes behavior into a Low/Medium/High trust band with plain reasons.
+- Highlights behavioral patterns (seeder/trap/relay-style activity) without identity assumptions.
+- Keeps local caches for token metadata and curated lists.
+- Provides a viewer to explore activity, counterparties, and patterns.
+
+## Canonical example
+
+“How can I trust your address without trusting you?”
+
+Probo answers: “By showing how this address has behaved in the past — across real transactions.”
 
 ## Website
 - http://probo.co.za 
+
+## Quick start
+
+Create a `.env` file at repo root:
+
+```bash
+ALCHEMY_API_KEY=...
+ETHERSCAN_API_KEY=... # optional fallback and enrichment
+```
+
+Extract data for test addresses:
+
+```bash
+python3 scripts/extract_wallet_data.py --addresses-file test_address.txt --days 120
+```
+
+Analyze extractions:
+
+```bash
+python3 scripts/analyze_extractions.py
+```
+
+Run the viewer:
+
+```bash
+cd viewer
+npm install
+npm run dev
+```
 
 ## Architecture
 
@@ -69,35 +108,6 @@ flowchart LR
     C --> R[Explainable Reasons]
 ```
 
-## Quick start
-
-Create a `.env` file at repo root:
-
-```bash
-ALCHEMY_API_KEY=...
-ETHERSCAN_API_KEY=... # optional fallback and enrichment
-```
-
-Extract data for test addresses:
-
-```bash
-python3 scripts/extract_wallet_data.py --addresses-file test_address.txt --days 120
-```
-
-Analyze extractions:
-
-```bash
-python3 scripts/analyze_extractions.py
-```
-
-Run the viewer:
-
-```bash
-cd viewer
-npm install
-npm run dev
-```
-
 ## Makefile shortcuts
 
 ```bash
@@ -113,10 +123,9 @@ make analyze-extractions
 ## Data layout
 
 - `data/extractions/*.json`: raw extracted activity per address
-- `data/analysis/*.json`: analysis output with rating + reasons
+- `data/analysis/*.json`: analysis output with trust band + reasons
 - `data/token_metadata_cache.json`: cached token metadata
 - `data/stablecoins.json`: curated stablecoin list
-- `data/flagged_addresses.txt`: known flagged addresses
 
 ## Extraction details
 
@@ -133,7 +142,7 @@ Optional Etherscan fallback is used for:
 - earliest/latest transaction bounds
 - token metadata when Alchemy is incomplete
 
-## Data leeching flow (per address)
+## Extraction flow (per address)
 
 ```mermaid
 flowchart TD
@@ -154,8 +163,8 @@ Each address is processed with a bounded time window and transfer cap, then pagi
 
 Each analysis JSON includes:
 
-- `rating`: low / medium / high
-- `score`: numeric risk score
+- `label`: Low / Medium / High trust band
+- `score`: numeric trust signal (behavior-based)
 - `reasons`: short, explainable signals
 - `features`: quantified metrics used by the scoring
 - `infra`: optional infra behavior detection summary
@@ -168,11 +177,6 @@ The viewer loads a JSON file, stores it in IndexedDB, and lets you explore:
 - per-address summaries
 - force graph of connected addresses/tokens
 - directional edges for transfer flow
-
-Created a viewer and graph visualizer for Probo, helps to understand the data:
-![viewer.png](docs/img/viewer.png)
-
-![graph.png](docs/img/graph.png)
 
 ## Notes
 
